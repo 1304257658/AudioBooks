@@ -8,8 +8,8 @@ import com.example.audiobooks.model.AudioBook
 import com.example.audiobooks.storage.BookRepository
 import com.example.audiobooks.storage.ModelRepository
 import com.example.audiobooks.storage.TtsModelSpec
-import com.example.audiobooks.tts.AndroidTtsPlayer
 import com.example.audiobooks.tts.PlaybackEvent
+import com.example.audiobooks.tts.SherpaTtsPlayer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,7 +57,7 @@ data class AudioBookUiState(
 class AudioBookViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = BookRepository(application)
     private val modelRepository = ModelRepository(application)
-    private val player = AndroidTtsPlayer(application)
+    private val player = SherpaTtsPlayer(application)
     private val _state = MutableStateFlow(AudioBookUiState())
     private var sleepTimerJob: Job? = null
     private var repeatRemaining = 0
@@ -143,6 +143,15 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
     fun togglePlayback() {
         val snapshot = _state.value
         val book = snapshot.selectedBook ?: return
+        val selectedModel = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
+        if (selectedModel?.availableInApp == false) {
+            _state.update { it.copy(message = "${selectedModel.name} runtime is not integrated yet.") }
+            return
+        }
+        if (!snapshot.modelInstalled) {
+            _state.update { it.copy(message = "Voice model runtime is not ready.") }
+            return
+        }
         if (snapshot.isPlaying) {
             player.stop()
             _state.update { it.copy(isPlaying = false) }
@@ -313,6 +322,7 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun selectModel(modelId: String) {
+        player.clearEngine()
         modelRepository.selectModel(modelId)
         refreshModelState()
     }

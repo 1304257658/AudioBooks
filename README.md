@@ -2,6 +2,8 @@
 
 Offline-first Android audiobook app. The app imports local books, parses readable text, stores all app data under one private app data root, and plays with a local TTS runtime when an integrated model is available.
 
+See `PROJECT.md` for maintained implementation notes, architecture, known traps, and current gaps.
+
 ## Current Features
 
 - Imports EPUB, TXT, and text-based PDF files.
@@ -9,13 +11,12 @@ Offline-first Android audiobook app. The app imports local books, parses readabl
 - Splits Chinese and English text into sentence-sized playback units.
 - Separate Library, Reader, and Settings pages.
 - Reader page is intentionally minimal: text, current position, previous/start-stop/next controls.
-- Settings page owns model selection, model download state, and playback speed.
+- Settings page owns global model management. Reader-specific controls live in the Reader tools panel.
 - Follows the Android system light/dark theme.
 - Stores book metadata, parsed text, and playback progress locally.
 - Restores the last listened position and sorts recently listened books first.
 - Playback speed supports 0.01x steps from 0.50x to 3.00x.
-- Model download plumbing supports status-bar progress notifications.
-- TTS playback has a small pre-generation queue so the next chunks can be prepared while current audio is playing.
+- Model download plumbing supports status-bar progress notifications and in-app progress display.
 
 ## Model Policy
 
@@ -27,7 +28,7 @@ The in-app model list now follows the provided mobile offline TTS research repor
 - Fun-CosyVoice3-0.5B ONNX
 - Fish Speech 1.5
 
-These models are listed as target models, but their mobile runtime is not integrated yet. CosyVoice and Fish Speech need ONNX Runtime Mobile plus model-specific tokenizer, acoustic, vocoder, and post-processing work. The app does not fake support for these models; Settings shows them as runtime-pending until that integration exists.
+These models are listed as target models, but their mobile runtime is not integrated yet. CosyVoice and Fish Speech need ONNX Runtime Mobile plus model-specific tokenizer, acoustic, vocoder, and post-processing work. The app does not use Android system TTS as a fallback because it would hide runtime gaps and produce misleading quality tests.
 
 ## Local Build
 

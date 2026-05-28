@@ -493,7 +493,7 @@ private fun ReaderPane(
             Button(
                 onClick = onTogglePlayback,
                 modifier = Modifier.weight(1f),
-                enabled = true,
+                enabled = state.modelInstalled,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (state.isPlaying) Color(0xFF9B3A35) else MaterialTheme.colorScheme.primary
                 )
