@@ -48,7 +48,7 @@ class BookRepository(private val context: Context) {
         }
 
         val parsed = when (extension) {
-            "epub" -> epubParser.parse(sourceFile)
+            "epub" -> epubParser.parse(sourceFile, targetDir)
             "txt" -> textParser.parse(sourceFile)
             "pdf" -> pdfParser.parse(sourceFile)
             else -> error("Unsupported file type: .$extension")
@@ -58,6 +58,7 @@ class BookRepository(private val context: Context) {
             title = parsed.title,
             author = parsed.author,
             fileName = originalName,
+            readerHtmlFile = parsed.readerHtmlFile,
             importedAt = System.currentTimeMillis(),
             lastReadAt = null,
             chapters = parsed.chapters,
@@ -96,6 +97,12 @@ class BookRepository(private val context: Context) {
         File(dir, "book.json").writeText(book.toJson().toString(), Charsets.UTF_8)
     }
 
+    fun readerHtmlUrl(book: AudioBook): String? {
+        val relative = book.readerHtmlFile ?: return null
+        val file = File(booksDir, "${book.id}/$relative")
+        return file.takeIf { it.isFile }?.let { Uri.fromFile(it).toString() }
+    }
+
     private fun readIndex(): List<String> {
         if (!indexFile.isFile) return emptyList()
         val array = JSONArray(indexFile.readText(Charsets.UTF_8))
@@ -111,6 +118,7 @@ class BookRepository(private val context: Context) {
         .put("title", title)
         .put("author", author)
         .put("fileName", fileName)
+        .put("readerHtmlFile", readerHtmlFile)
         .put("importedAt", importedAt)
         .put("lastReadAt", lastReadAt)
         .put("currentSentenceIndex", currentSentenceIndex)
@@ -156,6 +164,7 @@ class BookRepository(private val context: Context) {
             title = json.getString("title"),
             author = json.optString("author").takeIf(String::isNotBlank),
             fileName = json.getString("fileName"),
+            readerHtmlFile = json.optString("readerHtmlFile").takeIf(String::isNotBlank),
             importedAt = json.getLong("importedAt"),
             lastReadAt = json.optLong("lastReadAt").takeIf { it > 0 },
             chapters = chapters,

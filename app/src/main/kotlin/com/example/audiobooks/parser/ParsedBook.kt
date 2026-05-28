@@ -7,7 +7,8 @@ data class ParsedBook(
     val title: String,
     val author: String?,
     val chapters: List<BookChapter>,
-    val sentences: List<BookSentence>
+    val sentences: List<BookSentence>,
+    val readerHtmlFile: String? = null
 )
 
 fun splitReadableText(text: String, chapterIndex: Int = 0): List<BookSentence> {
@@ -42,4 +43,3 @@ private val sentenceEndChars = setOf(
 private val softBreakChars = setOf(
     '\uff0c', '\u3001', ',', ':', '\uff1a'
 )
-

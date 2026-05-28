@@ -20,6 +20,7 @@ import kotlin.math.roundToInt
 data class AudioBookUiState(
     val books: List<AudioBook> = emptyList(),
     val selectedBook: AudioBook? = null,
+    val readerHtmlUrl: String? = null,
     val currentSentenceIndex: Int = 0,
     val isPlaying: Boolean = false,
     val speechRate: Float = 1.0f,
@@ -84,6 +85,7 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
         _state.update {
             it.copy(
                 selectedBook = book,
+                readerHtmlUrl = repository.readerHtmlUrl(book),
                 currentSentenceIndex = book.currentSentenceIndex.coerceInBook(book),
                 isPlaying = false,
                 message = null
@@ -168,6 +170,7 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
             it.copy(
                 books = books,
                 selectedBook = selected,
+                readerHtmlUrl = selected?.let { book -> repository.readerHtmlUrl(book) },
                 currentSentenceIndex = selected?.currentSentenceIndex?.coerceInBook(selected) ?: 0
             )
         }

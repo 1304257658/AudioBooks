@@ -1,9 +1,14 @@
 package com.example.audiobooks
 
 import android.Manifest
+import android.app.Activity
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.View
+import android.view.WindowInsets
+import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -45,6 +50,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,9 +59,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.audiobooks.model.AudioBook
@@ -103,6 +112,7 @@ private fun AudioBooksScreen(
     onMessageShown: () -> Unit
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
     var currentScreen by remember { mutableStateOf(AppScreen.Library) }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) onImport(uri)
@@ -114,6 +124,7 @@ private fun AudioBooksScreen(
     BackHandler(enabled = currentScreen != AppScreen.Library) {
         currentScreen = AppScreen.Library
     }
+    FullScreenEffect(enabled = currentScreen == AppScreen.Reader)
 
     LaunchedEffect(state.message) {
         val message = state.message ?: return@LaunchedEffect
@@ -123,55 +134,56 @@ private fun AudioBooksScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        when (currentScreen) {
-                            AppScreen.Reader -> state.selectedBook?.title ?: "Reader"
-                            AppScreen.Settings -> "Settings"
-                            AppScreen.Library -> "AudioBooks"
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                },
-                navigationIcon = {
-                    if (currentScreen != AppScreen.Library) {
-                        TextButton(onClick = { currentScreen = AppScreen.Library }) {
-                            Text("Back")
-                        }
-                    }
-                },
-                actions = {
-                    if (currentScreen != AppScreen.Settings) {
-                        TextButton(onClick = { currentScreen = AppScreen.Settings }) {
-                            Text("Settings")
-                        }
-                    }
-                    if (currentScreen == AppScreen.Library) {
-                        TextButton(
-                            enabled = !state.isBusy,
-                            onClick = {
-                                importLauncher.launch(
-                                    arrayOf(
-                                        "application/epub+zip",
-                                        "application/pdf",
-                                        "text/plain",
-                                        "application/octet-stream",
-                                        "*/*"
-                                    )
-                                )
+            if (currentScreen != AppScreen.Reader) {
+                TopAppBar(
+                    title = {
+                        Text(
+                            when (currentScreen) {
+                                AppScreen.Settings -> "Settings"
+                                else -> "AudioBooks"
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    navigationIcon = {
+                        if (currentScreen != AppScreen.Library) {
+                            TextButton(onClick = { currentScreen = AppScreen.Library }) {
+                                Text("Back")
                             }
-                        ) {
-                            Text("Import")
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
+                    },
+                    actions = {
+                        if (currentScreen != AppScreen.Settings) {
+                            TextButton(onClick = { currentScreen = AppScreen.Settings }) {
+                                Text("Settings")
+                            }
+                        }
+                        if (currentScreen == AppScreen.Library) {
+                            TextButton(
+                                enabled = !state.isBusy,
+                                onClick = {
+                                    importLauncher.launch(
+                                        arrayOf(
+                                            "application/epub+zip",
+                                            "application/pdf",
+                                            "text/plain",
+                                            "application/octet-stream",
+                                            "*/*"
+                                        )
+                                    )
+                                }
+                            ) {
+                                Text("Import")
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface
+                    )
                 )
-            )
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
@@ -202,6 +214,11 @@ private fun AudioBooksScreen(
                     state = state,
                     onRateChange = onRateChange,
                     onSelectModel = onSelectModel,
+                    onOpenModelSource = { url ->
+                        runCatching {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        }
+                    },
                     onDownloadModel = {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -335,23 +352,10 @@ private fun ReaderPane(
             color = MaterialTheme.colorScheme.surfaceVariant,
             shape = RoundedCornerShape(8.dp)
         ) {
-            LazyColumn(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                val start = (state.currentSentenceIndex - 4).coerceAtLeast(0)
-                val end = (state.currentSentenceIndex + 12).coerceAtMost(book.sentences.lastIndex)
-                items((start..end).toList()) { index ->
-                    val sentence = book.sentences[index]
-                    val active = index == state.currentSentenceIndex
-                    Text(
-                        text = sentence.text,
-                        style = if (active) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
-                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                    )
-                    if (active) HorizontalDivider()
-                }
+            if (state.readerHtmlUrl != null) {
+                HtmlReader(url = state.readerHtmlUrl, modifier = Modifier.fillMaxSize())
+            } else {
+                TextReader(state = state, modifier = Modifier.padding(16.dp))
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -389,6 +393,7 @@ private fun SettingsPane(
     state: AudioBookUiState,
     onRateChange: (Float) -> Unit,
     onSelectModel: (String) -> Unit,
+    onOpenModelSource: (String) -> Unit,
     onDownloadModel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -401,6 +406,7 @@ private fun SettingsPane(
             ModelStatusPanel(
                 state = state,
                 onSelectModel = onSelectModel,
+                onOpenModelSource = onOpenModelSource,
                 onDownloadModel = onDownloadModel
             )
         }
@@ -429,6 +435,7 @@ private fun SettingsPane(
 private fun ModelStatusPanel(
     state: AudioBookUiState,
     onSelectModel: (String) -> Unit,
+    onOpenModelSource: (String) -> Unit,
     onDownloadModel: () -> Unit
 ) {
     val selectedModel = state.models.firstOrNull { it.id == state.selectedModelId }
@@ -492,6 +499,12 @@ private fun ModelStatusPanel(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Button(
+                        onClick = { onOpenModelSource(selectedModel.downloadUrl) },
+                        enabled = !state.isBusy
+                    ) {
+                        Text("Open download page")
+                    }
                 }
                 state.modelInstalled -> {
                     Text(
@@ -499,6 +512,82 @@ private fun ModelStatusPanel(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TextReader(state: AudioBookUiState, modifier: Modifier = Modifier) {
+    val book = state.selectedBook ?: return
+    LazyColumn(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        val start = (state.currentSentenceIndex - 4).coerceAtLeast(0)
+        val end = (state.currentSentenceIndex + 12).coerceAtMost(book.sentences.lastIndex)
+        items((start..end).toList()) { index ->
+            val sentence = book.sentences[index]
+            val active = index == state.currentSentenceIndex
+            Text(
+                text = sentence.text,
+                style = if (active) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
+                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+            )
+            if (active) HorizontalDivider()
+        }
+    }
+}
+
+@Composable
+private fun HtmlReader(url: String, modifier: Modifier = Modifier) {
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            WebView(context).apply {
+                settings.allowFileAccess = true
+                settings.allowContentAccess = true
+                settings.builtInZoomControls = false
+                settings.displayZoomControls = false
+                loadUrl(url)
+            }
+        },
+        update = { webView ->
+            if (webView.url != url) {
+                webView.loadUrl(url)
+            }
+        }
+    )
+}
+
+@Composable
+private fun FullScreenEffect(enabled: Boolean) {
+    val view = LocalView.current
+    DisposableEffect(enabled) {
+        val window = (view.context as? Activity)?.window
+        if (window != null && enabled) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                window.insetsController?.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+            } else {
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility =
+                    View.SYSTEM_UI_FLAG_FULLSCREEN or
+                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            }
+        }
+        onDispose {
+            if (window != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    window.insetsController?.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                } else {
+                    @Suppress("DEPRECATION")
+                    window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
                 }
             }
         }
