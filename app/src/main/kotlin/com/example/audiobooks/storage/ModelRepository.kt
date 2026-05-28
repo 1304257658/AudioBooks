@@ -64,6 +64,13 @@ class ModelRepository(context: Context) {
         return state()
     }
 
+    suspend fun deleteSelectedModel() = withContext(Dispatchers.IO) {
+        val spec = selectedModel()
+        val dir = modelDir(spec)
+        if (dir.exists()) dir.deleteRecursively()
+        File(paths.downloads, spec.archiveName).takeIf { it.exists() }?.delete()
+    }
+
     suspend fun downloadAndInstall(onProgress: (Float) -> Unit) = withContext(Dispatchers.IO) {
         paths.ensure()
         val spec = selectedModel()

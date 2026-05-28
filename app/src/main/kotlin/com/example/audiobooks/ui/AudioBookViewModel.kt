@@ -14,8 +14,22 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+data class ReaderSettings(
+    val fontScale: Float = 1.0f,
+    val lineSpacing: Float = 1.35f,
+    val background: String = "system",
+    val gesturesEnabled: Boolean = true,
+    val repeatCount: Int = 1,
+    val abStart: Int? = null,
+    val abEnd: Int? = null,
+    val sleepTimerLabel: String? = null,
+    val sleepTimerEndsAt: Long? = null
+)
 
 data class AudioBookUiState(
     val books: List<AudioBook> = emptyList(),
@@ -30,6 +44,9 @@ data class AudioBookUiState(
     val modelInstalled: Boolean = false,
     val modelDownloadUrl: String = "",
     val modelDownloadProgress: Float? = null,
+    val searchQuery: String = "",
+    val searchResults: List<Int> = emptyList(),
+    val readerSettings: ReaderSettings = ReaderSettings(),
     val isBusy: Boolean = false,
     val message: String? = null
 )
@@ -39,6 +56,8 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
     private val modelRepository = ModelRepository(application)
     private val player = SherpaTtsPlayer(application)
     private val _state = MutableStateFlow(AudioBookUiState())
+    private var sleepTimerJob: Job? = null
+    private var repeatRemaining = 0
     val state: StateFlow<AudioBookUiState> = _state.asStateFlow()
 
     init {
@@ -55,8 +74,33 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                     is PlaybackEvent.SentenceDone -> {
                         val selected = _state.value.selectedBook
-                        if (selected != null && event.index >= selected.sentences.lastIndex) {
+                        val settings = _state.value.readerSettings
+                        val chapterEnd = selected?.chapters
+                            ?.firstOrNull { event.index in it.startSentenceIndex..it.endSentenceIndex }
+                            ?.endSentenceIndex
+                        when {
+                            selected == null -> _state.update { it.copy(isPlaying = false) }
+                            repeatRemaining > 0 -> {
+                                repeatRemaining -= 1
+                                player.play(selected.sentences, event.index, _state.value.speechRate)
+                            }
+                            settings.abStart != null && settings.abEnd != null && event.index >= settings.abEnd -> {
+                                repeatRemaining = (settings.repeatCount - 1).coerceAtLeast(0)
+                                player.play(selected.sentences, settings.abStart, _state.value.speechRate)
+                            }
+                            settings.sleepTimerLabel == "chapter" && chapterEnd != null && event.index >= chapterEnd -> {
+                                player.stop()
+                                _state.update {
+                                    it.copy(
+                                        isPlaying = false,
+                                        readerSettings = it.readerSettings.copy(sleepTimerLabel = null, sleepTimerEndsAt = null),
+                                        message = "Stopped at chapter end."
+                                    )
+                                }
+                            }
+                            event.index >= selected.sentences.lastIndex -> {
                             _state.update { it.copy(isPlaying = false) }
+                            }
                         }
                     }
                     is PlaybackEvent.Error -> _state.update { it.copy(message = event.message) }
@@ -110,6 +154,7 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
             _state.update { it.copy(isPlaying = false) }
             saveProgress(snapshot.currentSentenceIndex)
         } else {
+            repeatRemaining = (snapshot.readerSettings.repeatCount - 1).coerceAtLeast(0)
             player.play(book.sentences, snapshot.currentSentenceIndex, snapshot.speechRate)
             _state.update { it.copy(isPlaying = true) }
         }
@@ -121,6 +166,112 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
         player.stop()
         _state.update { it.copy(currentSentenceIndex = next, isPlaying = false) }
         saveProgress(next)
+    }
+
+    fun jumpTo(sentenceIndex: Int) {
+        val book = _state.value.selectedBook ?: return
+        val next = sentenceIndex.coerceInBook(book)
+        player.stop()
+        _state.update { it.copy(currentSentenceIndex = next, isPlaying = false) }
+        saveProgress(next)
+    }
+
+    fun addAnnotation(sentenceIndex: Int, color: String = "yellow", note: String = "") {
+        val book = _state.value.selectedBook ?: return
+        viewModelScope.launch {
+            repository.addAnnotation(book.id, sentenceIndex, color, note)
+            refreshBooks(book.id)
+            _state.update { it.copy(message = "Bookmark saved.") }
+        }
+    }
+
+    fun deleteAnnotation(annotationId: String) {
+        val book = _state.value.selectedBook ?: return
+        viewModelScope.launch {
+            repository.deleteAnnotation(book.id, annotationId)
+            refreshBooks(book.id)
+        }
+    }
+
+    fun exportAnnotations() {
+        val book = _state.value.selectedBook ?: return
+        viewModelScope.launch {
+            val file = repository.exportAnnotationsMarkdown(book.id)
+            _state.update {
+                it.copy(message = if (file != null) "Annotations exported." else "No annotations exported.")
+            }
+        }
+    }
+
+    fun updateSearch(query: String) {
+        val book = _state.value.selectedBook
+        val results = if (query.isBlank() || book == null) {
+            emptyList()
+        } else {
+            book.sentences.asSequence()
+                .filter { it.text.contains(query, ignoreCase = true) }
+                .map { it.index }
+                .take(100)
+                .toList()
+        }
+        _state.update { it.copy(searchQuery = query, searchResults = results) }
+    }
+
+    fun updateReaderSettings(settings: ReaderSettings) {
+        _state.update { it.copy(readerSettings = settings) }
+    }
+
+    fun setRepeatCount(count: Int) {
+        _state.update {
+            it.copy(readerSettings = it.readerSettings.copy(repeatCount = count.coerceIn(1, 9)))
+        }
+    }
+
+    fun markRepeatStart() {
+        _state.update {
+            it.copy(readerSettings = it.readerSettings.copy(abStart = it.currentSentenceIndex))
+        }
+    }
+
+    fun markRepeatEnd() {
+        _state.update {
+            val start = it.readerSettings.abStart
+            val end = it.currentSentenceIndex
+            it.copy(readerSettings = it.readerSettings.copy(abEnd = if (start == null) null else end.coerceAtLeast(start)))
+        }
+    }
+
+    fun clearRepeatRange() {
+        _state.update { it.copy(readerSettings = it.readerSettings.copy(abStart = null, abEnd = null)) }
+    }
+
+    fun startSleepTimer(minutes: Int?) {
+        sleepTimerJob?.cancel()
+        if (minutes == null) {
+            _state.update { it.copy(readerSettings = it.readerSettings.copy(sleepTimerLabel = null, sleepTimerEndsAt = null)) }
+            return
+        }
+        if (minutes < 0) {
+            _state.update {
+                it.copy(readerSettings = it.readerSettings.copy(sleepTimerLabel = "chapter", sleepTimerEndsAt = null))
+            }
+            return
+        }
+        val endAt = System.currentTimeMillis() + minutes * 60_000L
+        _state.update {
+            it.copy(readerSettings = it.readerSettings.copy(sleepTimerLabel = "${minutes}m", sleepTimerEndsAt = endAt))
+        }
+        sleepTimerJob = viewModelScope.launch {
+            delay(minutes * 60_000L)
+            player.stop()
+            _state.update {
+                it.copy(
+                    isPlaying = false,
+                    readerSettings = it.readerSettings.copy(sleepTimerLabel = null, sleepTimerEndsAt = null),
+                    message = "Sleep timer stopped playback."
+                )
+            }
+        }
     }
 
     fun setSpeechRate(rate: Float) {
@@ -143,6 +294,14 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
                 _state.update { it.copy(message = error.message ?: "Model download failed.") }
             }
             _state.update { it.copy(isBusy = false, modelDownloadProgress = null) }
+        }
+    }
+
+    fun deleteSelectedModel() {
+        viewModelScope.launch {
+            modelRepository.deleteSelectedModel()
+            refreshModelState()
+            _state.update { it.copy(message = "Model package deleted.") }
         }
     }
 

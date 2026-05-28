@@ -10,6 +10,7 @@ data class AudioBook(
     val lastReadAt: Long? = null,
     val chapters: List<BookChapter>,
     val sentences: List<BookSentence>,
+    val annotations: List<BookAnnotation> = emptyList(),
     val currentSentenceIndex: Int = 0
 ) {
     val totalSentences: Int get() = sentences.size
@@ -26,6 +27,14 @@ data class BookSentence(
     val index: Int,
     val chapterIndex: Int,
     val text: String
+)
+
+data class BookAnnotation(
+    val id: String,
+    val sentenceIndex: Int,
+    val color: String,
+    val note: String,
+    val createdAt: Long
 )
 
 

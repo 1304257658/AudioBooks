@@ -3,6 +3,7 @@
 import android.content.Context
 import android.net.Uri
 import com.example.audiobooks.model.AudioBook
+import com.example.audiobooks.model.BookAnnotation
 import com.example.audiobooks.model.BookChapter
 import com.example.audiobooks.model.BookSentence
 import com.example.audiobooks.parser.EpubParser
@@ -86,6 +87,43 @@ class BookRepository(private val context: Context) {
         }
     }
 
+    suspend fun addAnnotation(bookId: String, sentenceIndex: Int, color: String, note: String) =
+        withContext(Dispatchers.IO) {
+            loadBook(bookId)?.let { book ->
+                val annotation = BookAnnotation(
+                    id = System.currentTimeMillis().toString(),
+                    sentenceIndex = sentenceIndex.coerceAtLeast(0),
+                    color = color,
+                    note = note,
+                    createdAt = System.currentTimeMillis()
+                )
+                saveBook(book.copy(annotations = book.annotations + annotation))
+            }
+        }
+
+    suspend fun deleteAnnotation(bookId: String, annotationId: String) = withContext(Dispatchers.IO) {
+        loadBook(bookId)?.let { book ->
+            saveBook(book.copy(annotations = book.annotations.filterNot { it.id == annotationId }))
+        }
+    }
+
+    suspend fun exportAnnotationsMarkdown(bookId: String): File? = withContext(Dispatchers.IO) {
+        val book = loadBook(bookId) ?: return@withContext null
+        val lines = buildList {
+            add("# ${book.title}")
+            add("")
+            book.annotations.sortedBy { it.sentenceIndex }.forEach { annotation ->
+                val sentence = book.sentences.getOrNull(annotation.sentenceIndex)?.text.orEmpty()
+                add("- Sentence ${annotation.sentenceIndex + 1} [${annotation.color}]")
+                add("  - $sentence")
+                if (annotation.note.isNotBlank()) add("  - Note: ${annotation.note}")
+            }
+        }
+        File(booksDir, "${book.id}/annotations.md").also { file ->
+            file.writeText(lines.joinToString("\n"), Charsets.UTF_8)
+        }
+    }
+
     private fun loadBook(id: String): AudioBook? {
         val file = File(booksDir, "$id/book.json")
         if (!file.isFile) return null
@@ -135,6 +173,14 @@ class BookRepository(private val context: Context) {
                 .put("chapterIndex", sentence.chapterIndex)
                 .put("text", sentence.text)
         }))
+        .put("annotations", JSONArray(annotations.map { annotation ->
+            JSONObject()
+                .put("id", annotation.id)
+                .put("sentenceIndex", annotation.sentenceIndex)
+                .put("color", annotation.color)
+                .put("note", annotation.note)
+                .put("createdAt", annotation.createdAt)
+        }))
 
     private fun String.toBook(): AudioBook {
         val json = JSONObject(this)
@@ -159,6 +205,18 @@ class BookRepository(private val context: Context) {
                 )
             }
         }
+        val annotations = json.optJSONArray("annotations")?.let { array ->
+            (0 until array.length()).map { i ->
+                val item = array.getJSONObject(i)
+                BookAnnotation(
+                    id = item.getString("id"),
+                    sentenceIndex = item.getInt("sentenceIndex"),
+                    color = item.optString("color", "yellow"),
+                    note = item.optString("note"),
+                    createdAt = item.optLong("createdAt", 0L)
+                )
+            }
+        }.orEmpty()
         return AudioBook(
             id = json.getString("id"),
             title = json.getString("title"),
@@ -169,6 +227,7 @@ class BookRepository(private val context: Context) {
             lastReadAt = json.optLong("lastReadAt").takeIf { it > 0 },
             chapters = chapters,
             sentences = sentences,
+            annotations = annotations,
             currentSentenceIndex = json.optInt("currentSentenceIndex", 0)
         )
     }
