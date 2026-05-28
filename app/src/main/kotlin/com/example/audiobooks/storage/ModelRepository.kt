@@ -6,12 +6,14 @@ import android.app.NotificationManager
 import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 data class TtsModelSpec(
     val id: String,
@@ -22,6 +24,7 @@ data class TtsModelSpec(
     val directoryName: String,
     val archiveName: String,
     val downloadUrl: String,
+    val huggingFaceRepoId: String,
     val modelName: String = "model.onnx",
     val lexicon: String = "lexicon.txt",
     val ruleFar: String? = null,
@@ -34,6 +37,7 @@ data class TtsModelSpec(
 data class ModelInstallState(
     val selected: TtsModelSpec,
     val models: List<TtsModelSpec>,
+    val downloadedIds: Set<String>,
     val installedIds: Set<String>,
     val installed: Boolean,
     val modelDir: File,
@@ -47,10 +51,12 @@ class ModelRepository(context: Context) {
     fun state(): ModelInstallState {
         paths.ensure()
         val selected = selectedModel()
+        val downloadedIds = MODELS.filter { isDownloaded(it) }.mapTo(mutableSetOf()) { it.id }
         val installedIds = MODELS.filter { isInstalled(it) }.mapTo(mutableSetOf()) { it.id }
         return ModelInstallState(
             selected = selected,
             models = MODELS,
+            downloadedIds = downloadedIds,
             installedIds = installedIds,
             installed = selected.id in installedIds,
             modelDir = modelDir(selected),
@@ -74,26 +80,69 @@ class ModelRepository(context: Context) {
     suspend fun downloadAndInstall(onProgress: (Float) -> Unit) = withContext(Dispatchers.IO) {
         paths.ensure()
         val spec = selectedModel()
-        require(spec.availableInApp) { "${spec.name} runtime is not integrated yet." }
-        val archive = File(paths.downloads, spec.archiveName)
         showProgressNotification(spec.name, 0)
-        download(spec.downloadUrl, archive) { progress ->
+        downloadHuggingFaceSnapshot(spec) { progress ->
+            val percent = (progress * 100).toInt().coerceIn(0, 100)
             onProgress(progress)
-            showProgressNotification(spec.name, (progress * 100).toInt().coerceIn(0, 100))
+            showProgressNotification(spec.name, percent)
         }
-        val tmpModels = File(paths.models, "${spec.directoryName}.tmp")
-        if (tmpModels.exists()) tmpModels.deleteRecursively()
-        tmpModels.mkdirs()
-        extractTarBz2(archive, tmpModels)
-
-        val extracted = File(tmpModels, spec.directoryName)
-        require(extracted.isDirectory) { "Downloaded model archive has an unexpected layout." }
-        val modelDir = modelDir(spec)
-        if (modelDir.exists()) modelDir.deleteRecursively()
-        require(extracted.renameTo(modelDir)) { "Could not move downloaded model into place." }
-        tmpModels.deleteRecursively()
-        require(state().installed) { "Model installation is incomplete." }
+        File(modelDir(spec), DOWNLOAD_MARKER).writeText(
+            JSONObject()
+                .put("repo", spec.huggingFaceRepoId)
+                .put("downloadedAt", System.currentTimeMillis())
+                .toString(),
+            Charsets.UTF_8
+        )
         showDoneNotification(spec.name)
+    }
+
+    private fun downloadHuggingFaceSnapshot(spec: TtsModelSpec, onProgress: (Float) -> Unit) {
+        val targetDir = modelDir(spec)
+        val tmpDir = File(paths.models, "${spec.directoryName}.tmp")
+        if (tmpDir.exists()) tmpDir.deleteRecursively()
+        tmpDir.mkdirs()
+        val files = huggingFaceFiles(spec.huggingFaceRepoId)
+            .filterNot { it.endsWith("/") }
+            .filterNot { it == ".gitattributes" || it.equals("README.md", ignoreCase = true) }
+        require(files.isNotEmpty()) { "No downloadable model files were found." }
+
+        files.forEachIndexed { index, relativePath ->
+            val target = File(tmpDir, relativePath).canonicalFile
+            require(target.path.startsWith(tmpDir.canonicalPath)) {
+                "Model repository contains an unsafe path."
+            }
+            target.parentFile?.mkdirs()
+            val baseProgress = index.toFloat() / files.size
+            val fileShare = 1f / files.size
+            download(huggingFaceResolveUrl(spec.huggingFaceRepoId, relativePath), target) { fileProgress ->
+                onProgress((baseProgress + fileShare * fileProgress).coerceIn(0f, 1f))
+            }
+        }
+
+        if (targetDir.exists()) targetDir.deleteRecursively()
+        require(tmpDir.renameTo(targetDir)) { "Could not move downloaded model into place." }
+        onProgress(1f)
+    }
+
+    private fun huggingFaceFiles(repoId: String): List<String> {
+        val apiUrl = "https://huggingface.co/api/models/$repoId"
+        val connection = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 60_000
+            instanceFollowRedirects = true
+        }
+        val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        val siblings = JSONObject(body).optJSONArray("siblings") ?: JSONArray()
+        return (0 until siblings.length()).mapNotNull { i ->
+            siblings.optJSONObject(i)?.optString("rfilename")?.takeIf(String::isNotBlank)
+        }
+    }
+
+    private fun huggingFaceResolveUrl(repoId: String, relativePath: String): String {
+        val encodedPath = relativePath.split("/").joinToString("/") { part ->
+            URLEncoder.encode(part, Charsets.UTF_8.name()).replace("+", "%20")
+        }
+        return "https://huggingface.co/$repoId/resolve/main/$encodedPath"
     }
 
     private fun download(url: String, target: File, onProgress: (Float) -> Unit) {
@@ -196,9 +245,13 @@ class ModelRepository(context: Context) {
         spec.availableInApp &&
         spec.requiredFiles.all { File(modelDir(spec), it).isFile }
 
+    private fun isDownloaded(spec: TtsModelSpec): Boolean =
+        File(modelDir(spec), DOWNLOAD_MARKER).isFile
+
     companion object {
         private const val CHANNEL_ID = "model_downloads"
         private const val NOTIFICATION_ID = 1001
+        private const val DOWNLOAD_MARKER = ".download-complete.json"
         val MODELS = listOf(
             TtsModelSpec(
                 id = "cosyvoice2-onnx",
@@ -208,7 +261,8 @@ class ModelRepository(context: Context) {
                 availableInApp = false,
                 directoryName = "CosyVoice2-0.5B_ONNX",
                 archiveName = "CosyVoice2-0.5B_ONNX.zip",
-                downloadUrl = "https://www.modelscope.cn/models/Lourdle/CosyVoice2-0.5B_ONNX",
+                downloadUrl = "https://huggingface.co/Lourdle/CosyVoice2-0.5B_ONNX",
+                huggingFaceRepoId = "Lourdle/CosyVoice2-0.5B_ONNX",
                 approximateSize = "ModelScope"
             ),
             TtsModelSpec(
@@ -220,6 +274,7 @@ class ModelRepository(context: Context) {
                 directoryName = "Fun-CosyVoice3-0.5B-ONNX",
                 archiveName = "cosy-voice3-onnx.zip",
                 downloadUrl = "https://huggingface.co/ayousanz/cosy-voice3-onnx",
+                huggingFaceRepoId = "ayousanz/cosy-voice3-onnx",
                 approximateSize = "HuggingFace"
             ),
             TtsModelSpec(
@@ -230,7 +285,8 @@ class ModelRepository(context: Context) {
                 availableInApp = false,
                 directoryName = "fish-speech-1.5",
                 archiveName = "fish-speech-1.5.zip",
-                downloadUrl = "https://www.modelscope.cn/models/fishaudio/fish-speech-1.5",
+                downloadUrl = "https://huggingface.co/fishaudio/fish-speech-1.5",
+                huggingFaceRepoId = "fishaudio/fish-speech-1.5",
                 approximateSize = "Conversion required"
             )
         )

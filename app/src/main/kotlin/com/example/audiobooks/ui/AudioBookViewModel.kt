@@ -40,6 +40,7 @@ data class AudioBookUiState(
     val speechRate: Float = 1.0f,
     val models: List<TtsModelSpec> = emptyList(),
     val selectedModelId: String = "",
+    val downloadedModelIds: Set<String> = emptySet(),
     val installedModelIds: Set<String> = emptySet(),
     val modelInstalled: Boolean = false,
     val modelDownloadUrl: String = "",
@@ -341,6 +342,7 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
             it.copy(
                 models = model.models,
                 selectedModelId = model.selected.id,
+                downloadedModelIds = model.downloadedIds,
                 installedModelIds = model.installedIds,
                 modelInstalled = model.installed,
                 modelDownloadUrl = model.downloadUrl

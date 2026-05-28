@@ -12,7 +12,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "0.2.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -30,6 +30,16 @@ android {
 
     androidResources {
         noCompress += listOf("onnx", "bin", "far", "fst", "txt")
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.outputs.forEach { output ->
+            output.outputFileName.set(
+                "AudioBooks-${variant.name}-v${output.versionName.get()}-${output.versionCode.get()}.apk"
+            )
+        }
     }
 }
 
