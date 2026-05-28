@@ -77,7 +77,7 @@ import com.example.audiobooks.ui.ReaderSettings
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private enum class AppScreen { Library, Reader, Settings }
+private enum class AppScreen { Library, Reader, Chapters, Settings }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -150,7 +150,7 @@ private fun AudioBooksScreen(
     ) {}
 
     BackHandler(enabled = currentScreen != AppScreen.Library) {
-        currentScreen = AppScreen.Library
+        currentScreen = if (currentScreen == AppScreen.Chapters) AppScreen.Reader else AppScreen.Library
     }
     FullScreenEffect(enabled = currentScreen == AppScreen.Reader)
 
@@ -168,6 +168,7 @@ private fun AudioBooksScreen(
                         Text(
                             when (currentScreen) {
                                 AppScreen.Settings -> "Settings"
+                                AppScreen.Chapters -> "Chapters"
                                 else -> "AudioBooks"
                             },
                             maxLines = 1,
@@ -176,7 +177,11 @@ private fun AudioBooksScreen(
                     },
                     navigationIcon = {
                         if (currentScreen != AppScreen.Library) {
-                            TextButton(onClick = { currentScreen = AppScreen.Library }) {
+                            TextButton(
+                                onClick = {
+                                    currentScreen = if (currentScreen == AppScreen.Chapters) AppScreen.Reader else AppScreen.Library
+                                }
+                            ) {
                                 Text("Back")
                             }
                         }
@@ -236,7 +241,16 @@ private fun AudioBooksScreen(
                     state = state,
                     onTogglePlayback = onTogglePlayback,
                     onJump = onJump,
+                    onOpenChapters = { currentScreen = AppScreen.Chapters },
                     onAddAnnotation = onAddAnnotation,
+                    modifier = Modifier.fillMaxSize()
+                )
+                AppScreen.Chapters -> ChaptersPane(
+                    state = state,
+                    onJumpTo = { index ->
+                        onJumpTo(index)
+                        currentScreen = AppScreen.Reader
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
                 AppScreen.Settings -> SettingsPane(
@@ -368,6 +382,7 @@ private fun ReaderPane(
     state: AudioBookUiState,
     onTogglePlayback: () -> Unit,
     onJump: (Int) -> Unit,
+    onOpenChapters: () -> Unit,
     onAddAnnotation: (Int, String, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -380,11 +395,17 @@ private fun ReaderPane(
             return
         }
 
-        Text(
-            text = "${state.currentSentenceIndex + 1} / ${book.totalSentences}",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "${state.currentSentenceIndex + 1} / ${book.totalSentences}",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onOpenChapters) {
+                Text("Chapters")
+            }
+        }
         Spacer(Modifier.height(10.dp))
         Surface(
             modifier = Modifier
@@ -430,6 +451,60 @@ private fun ReaderPane(
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
             ) {
                 Text("Next")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChaptersPane(
+    state: AudioBookUiState,
+    onJumpTo: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val book = state.selectedBook
+    Column(modifier.padding(16.dp)) {
+        if (book == null) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("Select a book first", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            return
+        }
+        Text(
+            text = book.title,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(12.dp))
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            items(book.chapters, key = { it.index }) { chapter ->
+                val active = state.currentSentenceIndex in chapter.startSentenceIndex..chapter.endSentenceIndex
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onJumpTo(chapter.startSentenceIndex) },
+                    color = if (active) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = chapter.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "Sentences ${chapter.startSentenceIndex + 1}-${chapter.endSentenceIndex + 1}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
         }
     }
