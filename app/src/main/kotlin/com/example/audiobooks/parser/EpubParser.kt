@@ -87,7 +87,10 @@ class EpubParser {
         val current = StringBuilder()
         normalized.forEach { char ->
             current.append(char)
-            if (char in sentenceEndChars || current.length >= 180) {
+            val shouldSplit = char in sentenceEndChars ||
+                (char in softBreakChars && current.length >= 45) ||
+                current.length >= 120
+            if (shouldSplit) {
                 current.toString().trim().takeIf { it.length >= 2 }?.let(result::add)
                 current.clear()
             }
@@ -136,6 +139,8 @@ class EpubParser {
             '\u3002', '\uff01', '\uff1f', '\uff1b',
             '.', '!', '?', ';', '\n'
         )
+        val softBreakChars = setOf(
+            '\uff0c', '\u3001', ',', ':', '\uff1a'
+        )
     }
 }
-

@@ -49,6 +49,7 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
                     }
                     if (audio.samples.isNotEmpty() && !stopped.get()) {
                         writeSamples(audio.samples)
+                        writeSilence(sampleRate, pauseMsFor(sentences[index].text))
                     }
                     _events.emit(PlaybackEvent.SentenceDone(index))
                     index += 1
@@ -140,6 +141,20 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
         }
         track?.write(pcm, 0, pcm.size)
     }
+
+    private fun writeSilence(sampleRate: Int, pauseMs: Int) {
+        if (pauseMs <= 0 || stopped.get()) return
+        val samples = (sampleRate * pauseMs) / 1000
+        track?.write(ShortArray(samples), 0, samples)
+    }
+
+    private fun pauseMsFor(text: String): Int =
+        when (text.trim().lastOrNull()) {
+            '\u3002', '.', '\uff01', '!', '\uff1f', '?' -> 420
+            '\uff1b', ';' -> 320
+            '\uff0c', '\u3001', ',', '\uff1a', ':' -> 220
+            else -> 260
+        }
 
 }
 

@@ -2,6 +2,7 @@ package com.example.audiobooks
 
 import android.net.Uri
 import android.os.Bundle
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -10,7 +11,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -42,7 +42,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -55,6 +57,8 @@ import com.example.audiobooks.model.AudioBook
 import com.example.audiobooks.ui.AudioBookUiState
 import com.example.audiobooks.ui.AudioBookViewModel
 import kotlin.math.roundToInt
+
+private enum class AppScreen { Library, Reader }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,8 +95,12 @@ private fun AudioBooksScreen(
     onMessageShown: () -> Unit
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
+    var currentScreen by remember { mutableStateOf(AppScreen.Library) }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) onImport(uri)
+    }
+    BackHandler(enabled = currentScreen == AppScreen.Reader) {
+        currentScreen = AppScreen.Library
     }
 
     LaunchedEffect(state.message) {
@@ -104,17 +112,32 @@ private fun AudioBooksScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("AudioBooks", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                actions = {
-                    TextButton(
-                        enabled = !state.isBusy,
-                        onClick = {
-                            importLauncher.launch(
-                                arrayOf("application/epub+zip", "application/octet-stream", "*/*")
-                            )
+                title = {
+                    Text(
+                        if (currentScreen == AppScreen.Reader) state.selectedBook?.title ?: "Listen" else "AudioBooks",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                navigationIcon = {
+                    if (currentScreen == AppScreen.Reader) {
+                        TextButton(onClick = { currentScreen = AppScreen.Library }) {
+                            Text("Back")
                         }
-                    ) {
-                        Text("Import EPUB")
+                    }
+                },
+                actions = {
+                    if (currentScreen == AppScreen.Library) {
+                        TextButton(
+                            enabled = !state.isBusy,
+                            onClick = {
+                                importLauncher.launch(
+                                    arrayOf("application/epub+zip", "application/octet-stream", "*/*")
+                                )
+                            }
+                        ) {
+                            Text("Import EPUB")
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -125,68 +148,32 @@ private fun AudioBooksScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        BoxWithConstraints(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            if (maxWidth < 720.dp) {
-                Column(Modifier.fillMaxSize()) {
-                    LibraryPane(
-                        books = state.books,
-                        selectedId = state.selectedBook?.id,
-                        isBusy = state.isBusy,
-                        onSelectBook = onSelectBook,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(0.34f)
-                    )
-                    Box(
-                        modifier = Modifier
-                            .height(1.dp)
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.outlineVariant)
-                    )
-                    ReaderPane(
-                        state = state,
-                        onTogglePlayback = onTogglePlayback,
-                        onJump = onJump,
-                        onRateChange = onRateChange,
-                        onDownloadModel = onDownloadModel,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(0.66f)
-                    )
-                }
+            if (currentScreen == AppScreen.Library) {
+                LibraryPane(
+                    books = state.books,
+                    selectedId = state.selectedBook?.id,
+                    isBusy = state.isBusy,
+                    onSelectBook = { book ->
+                        onSelectBook(book)
+                        currentScreen = AppScreen.Reader
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
             } else {
-                Row(Modifier.fillMaxSize()) {
-                    LibraryPane(
-                        books = state.books,
-                        selectedId = state.selectedBook?.id,
-                        isBusy = state.isBusy,
-                        onSelectBook = onSelectBook,
-                        modifier = Modifier
-                            .weight(0.42f)
-                            .fillMaxSize()
-                    )
-                    Box(
-                        modifier = Modifier
-                            .width(1.dp)
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.outlineVariant)
-                    )
-                    ReaderPane(
-                        state = state,
-                        onTogglePlayback = onTogglePlayback,
-                        onJump = onJump,
-                        onRateChange = onRateChange,
-                        onDownloadModel = onDownloadModel,
-                        modifier = Modifier
-                            .weight(0.58f)
-                            .fillMaxSize()
-                    )
-                }
+                ReaderPane(
+                    state = state,
+                    onTogglePlayback = onTogglePlayback,
+                    onJump = onJump,
+                    onRateChange = onRateChange,
+                    onDownloadModel = onDownloadModel,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
         }
     }
@@ -242,7 +229,7 @@ private fun EmptyLibrary() {
     ) {
         Text("No books yet", style = MaterialTheme.typography.titleMedium)
         Text(
-            text = "Use Import EPUB to add a book. The first version supports EPUB only.",
+            text = "Use Import EPUB to add a book. More formats will be added after the EPUB flow is stable.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -294,24 +281,11 @@ private fun ReaderPane(
             return
         }
 
-        Text(
-            text = book.title,
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-        book.author?.let {
-            Spacer(Modifier.height(4.dp))
-            Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Spacer(Modifier.height(16.dp))
-
         ModelStatusPanel(
             state = state,
             onDownloadModel = onDownloadModel
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
 
         Text(
             text = "${state.currentSentenceIndex + 1} / ${book.totalSentences}",
