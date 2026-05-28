@@ -4,6 +4,7 @@ import android.content.Context
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import com.example.audiobooks.tts.engine.TtsEngineRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -16,27 +17,42 @@ import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
 
+/** How a model package is fetched. Decoupled from the runtime that later consumes the files. */
+enum class DownloadStrategy {
+    /** Download an explicit file whitelist from a ModelScope repo (default). */
+    MODELSCOPE_FILES,
+
+    /** Download a single .tar.bz2 archive (e.g. sherpa-onnx GitHub release) and extract it. */
+    ARCHIVE_TAR_BZ2
+}
+
+/**
+ * Pure metadata describing a downloadable voice model. It carries NO runtime logic — it only points
+ * at an [engineId] (resolved via TtsEngineRegistry) and passes engine-specific paths through
+ * [engineParams]. This is what decouples "which model" from "which inference runtime".
+ */
 data class TtsModelSpec(
     val id: String,
     val name: String,
     val description: String,
+    /** Runtime engine id, resolved against TtsEngineRegistry. */
+    val engineId: String,
+    /** Human-facing runtime label for the model list. */
     val runtime: String,
-    val availableInApp: Boolean,
     val directoryName: String,
     val archiveName: String,
     val downloadUrl: String,
     val modelScopeRepoId: String,
     val downloadFiles: List<String>,
     val sizeBytes: Long,
-    val modelName: String = "model.onnx",
-    val lexicon: String = "lexicon.txt",
-    val ruleFar: String? = null,
-    val approximateSize: String
+    val downloadStrategy: DownloadStrategy = DownloadStrategy.MODELSCOPE_FILES,
+    /** Engine-specific configuration (e.g. modelName/lexicon/dictDir for sherpa-vits). */
+    val engineParams: Map<String, String> = emptyMap()
 ) {
-    val requiredFiles: List<String>
-        get() = listOfNotNull(modelName, lexicon, "tokens.txt", ruleFar)
-
     val sizeLabel: String
+        get() = formatBytes(sizeBytes)
+
+    val approximateSize: String
         get() = formatBytes(sizeBytes)
 }
 
@@ -94,10 +110,14 @@ class ModelRepository(context: Context) {
         paths.ensure()
         val spec = MODELS.firstOrNull { it.id == modelId } ?: selectedModel()
         showProgressNotification(spec.name, 0)
-        downloadModelScopeSnapshot(spec) { progress ->
+        val report: (Float) -> Unit = { progress ->
             val percent = (progress * 100).toInt().coerceIn(0, 100)
             onProgress(progress)
             showProgressNotification(spec.name, percent)
+        }
+        when (spec.downloadStrategy) {
+            DownloadStrategy.MODELSCOPE_FILES -> downloadModelScopeSnapshot(spec, report)
+            DownloadStrategy.ARCHIVE_TAR_BZ2 -> downloadAndExtractArchive(spec, report)
         }
         File(modelDir(spec), DOWNLOAD_MARKER).writeText(
             JSONObject()
@@ -140,6 +160,33 @@ class ModelRepository(context: Context) {
 
         if (targetDir.exists()) targetDir.deleteRecursively()
         require(tmpDir.renameTo(targetDir)) { "Could not move downloaded model into place." }
+        onProgress(1f)
+    }
+
+    private fun downloadAndExtractArchive(spec: TtsModelSpec, onProgress: (Float) -> Unit) {
+        val targetDir = modelDir(spec)
+        val tmpDir = File(paths.models, "${spec.directoryName}.tmp")
+        if (tmpDir.exists()) tmpDir.deleteRecursively()
+        tmpDir.mkdirs()
+
+        val archive = File(paths.downloads, spec.archiveName)
+        // Reserve the last 10% of the progress bar for extraction/move.
+        download(spec.downloadUrl, archive) { fraction, _ -> onProgress(fraction * 0.9f) }
+        extractTarBz2(archive, tmpDir)
+        onProgress(0.95f)
+
+        // Release archives commonly wrap everything in a single top-level folder; flatten it so the
+        // model files land directly under <models>/<directoryName>/.
+        val entries = tmpDir.listFiles()?.toList().orEmpty()
+        val extractedRoot = if (entries.size == 1 && entries.first().isDirectory) entries.first() else tmpDir
+
+        if (targetDir.exists()) targetDir.deleteRecursively()
+        if (!extractedRoot.renameTo(targetDir)) {
+            // Cross-directory rename can fail; fall back to a recursive copy.
+            extractedRoot.copyRecursively(targetDir, overwrite = true)
+        }
+        if (tmpDir.exists()) tmpDir.deleteRecursively()
+        archive.delete()
         onProgress(1f)
     }
 
@@ -259,9 +306,14 @@ class ModelRepository(context: Context) {
 
     private fun modelDir(spec: TtsModelSpec): File = File(paths.models, spec.directoryName)
 
-    private fun isInstalled(spec: TtsModelSpec): Boolean =
-        spec.availableInApp &&
-        spec.requiredFiles.all { File(modelDir(spec), it).isFile }
+    // A model counts as installed only when (a) a working engine is registered for its engineId and
+    // (b) every file that engine needs is present on disk. There is no hard-coded allow-list flag.
+    private fun isInstalled(spec: TtsModelSpec): Boolean {
+        val factory = TtsEngineRegistry.factory(spec.engineId) ?: return false
+        if (!factory.isImplemented) return false
+        val dir = modelDir(spec)
+        return factory.requiredFiles(spec).all { File(dir, it).isFile }
+    }
 
     private fun isDownloaded(spec: TtsModelSpec): Boolean =
         File(modelDir(spec), DOWNLOAD_MARKER).isFile
@@ -271,12 +323,37 @@ class ModelRepository(context: Context) {
         private const val NOTIFICATION_ID = 1001
         private const val DOWNLOAD_MARKER = ".download-complete.json"
         val MODELS = listOf(
+            // Default, fully working offline voice. End-to-end VITS (MeloTTS zh_en) on sherpa-onnx.
+            // Distributed by the sherpa-onnx project as a single .tar.bz2 release asset.
+            TtsModelSpec(
+                id = "vits-melo-tts-zh-en",
+                name = "MeloTTS 中文/英文 (VITS)",
+                description = "端到端离线中文/英文朗读嗓音，手机实时、体积小，听书默认推荐。基于 sherpa-onnx + ONNX Runtime Mobile。",
+                engineId = "sherpa-vits",
+                runtime = "sherpa-onnx VITS",
+                directoryName = "vits-melo-tts-zh_en",
+                archiveName = "vits-melo-tts-zh_en.tar.bz2",
+                downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-melo-tts-zh_en.tar.bz2",
+                modelScopeRepoId = "",
+                downloadStrategy = DownloadStrategy.ARCHIVE_TAR_BZ2,
+                downloadFiles = emptyList(),
+                sizeBytes = 174_000_000L,
+                engineParams = mapOf(
+                    "modelName" to "model.onnx",
+                    "lexicon" to "lexicon.txt",
+                    "tokens" to "tokens.txt",
+                    "dictDir" to "dict",
+                    "ruleFsts" to "date.fst,number.fst,phone.fst"
+                )
+            ),
+            // --- Pluggable slots for the high-quality target models (engines pending). ---
+            // Selectable + downloadable now; playback stays disabled until each engine ships.
             TtsModelSpec(
                 id = "cosyvoice2-onnx",
                 name = "CosyVoice2-0.5B ONNX",
-                description = "Priority model from the research report. High Chinese quality; ONNX Runtime Mobile integration is pending.",
-                runtime = "ONNX Runtime Mobile",
-                availableInApp = false,
+                description = "高音质中文目标模型（LLM+flow+vocoder，zero-shot 克隆）。当前仓库仅含 flow/hift，端侧推理引擎开发中。",
+                engineId = "cosyvoice2",
+                runtime = "ONNX Runtime Mobile（开发中）",
                 directoryName = "CosyVoice2-0.5B_ONNX",
                 archiveName = "CosyVoice2-0.5B_ONNX.zip",
                 downloadUrl = "https://www.modelscope.cn/models/Lourdle/CosyVoice2-0.5B_ONNX",
@@ -285,15 +362,14 @@ class ModelRepository(context: Context) {
                     "configuration.json",
                     "flow_hift_combined_fp16.onnx"
                 ),
-                sizeBytes = 335_737_054L + 25L,
-                approximateSize = formatBytes(335_737_054L + 25L)
+                sizeBytes = 335_737_054L + 25L
             ),
             TtsModelSpec(
                 id = "cosyvoice3-onnx",
                 name = "Fun-CosyVoice3-0.5B ONNX",
-                description = "Newer CosyVoice option from the report. Better quality target; ONNX Runtime Mobile integration is pending.",
-                runtime = "ONNX Runtime Mobile",
-                availableInApp = false,
+                description = "更新一代 CosyVoice，目标音质更好。端侧自回归推理引擎开发中。",
+                engineId = "cosyvoice3",
+                runtime = "ONNX Runtime Mobile（开发中）",
                 directoryName = "Fun-CosyVoice3-0.5B-ONNX",
                 archiveName = "cosy-voice3-onnx.zip",
                 downloadUrl = "https://www.modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
@@ -305,15 +381,14 @@ class ModelRepository(context: Context) {
                     "flow.decoder.estimator.fp32.onnx",
                     "speech_tokenizer_v3.onnx"
                 ),
-                sizeBytes = 47L + 6_934L + 28_303_423L + 1_326_216_933L + 969_451_503L,
-                approximateSize = formatBytes(47L + 6_934L + 28_303_423L + 1_326_216_933L + 969_451_503L)
+                sizeBytes = 47L + 6_934L + 28_303_423L + 1_326_216_933L + 969_451_503L
             ),
             TtsModelSpec(
                 id = "fish-speech-1.5",
                 name = "Fish Speech 1.5",
-                description = "Emotion-capable model from the report. It needs conversion/quantization before mobile integration.",
-                runtime = "Pending conversion",
-                availableInApp = false,
+                description = "带情感的目标模型，权重为 PyTorch，需先转换/量化为 ONNX 才能移动端运行。",
+                engineId = "fish-speech",
+                runtime = "待转换 ONNX（开发中）",
                 directoryName = "fish-speech-1.5",
                 archiveName = "fish-speech-1.5.zip",
                 downloadUrl = "https://www.modelscope.cn/models/fishaudio/fish-speech-1.5",
@@ -325,8 +400,7 @@ class ModelRepository(context: Context) {
                     "special_tokens.json",
                     "tokenizer.tiktoken"
                 ),
-                sizeBytes = 697L + 188_518_579L + 1_275_908_030L + 30_964L + 1_698_810L,
-                approximateSize = formatBytes(697L + 188_518_579L + 1_275_908_030L + 30_964L + 1_698_810L)
+                sizeBytes = 697L + 188_518_579L + 1_275_908_030L + 30_964L + 1_698_810L
             )
         )
     }

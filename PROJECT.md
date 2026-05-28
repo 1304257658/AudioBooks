@@ -4,11 +4,18 @@ This document is the durable project log for architecture decisions, implemented
 
 ## Product Direction
 
-- Offline-first Android audiobook reader.
+- Offline-first Android audiobook reader. Goal: the best-in-class offline listening experience.
 - User books, reading progress, settings, downloads, and model files stay on device.
 - Public model download is allowed. User content upload is not allowed.
 - Do not bundle large model files into Git or the APK.
-- Do not fake TTS quality with system fallback voices. Playback must use the intended local model runtime once it is integrated.
+- **Model / runtime decoupling is a core principle.** AI TTS models iterate fast and the underlying
+  inference model will be swapped over time, so the reader/playback layer must never depend on a
+  specific model. Models plug in behind a `TtsEngine` SPI; adding or replacing a model is one new
+  engine + one spec entry, with no changes to playback, UI, or storage.
+- Do not fake TTS quality with a system fallback voice. If a selected model's engine is not yet
+  implemented, playback stays disabled with an honest message — never silently substitute a
+  lower-quality voice. This is about not misleading users, NOT about withholding a working feature:
+  a real working engine ships as the default voice.
 
 ## Current Architecture
 
@@ -24,12 +31,30 @@ This document is the durable project log for architecture decisions, implemented
   - EPUB: parses OPF spine, extracts readable text, writes local `reader/reader.html`, and extracts EPUB assets for WebView reading.
   - TXT: UTF-8 plain text parsing.
   - PDF: text PDF parsing through PDFBox Android, currently page-based chapters.
-- TTS:
-  - Target models are CosyVoice2 ONNX, Fun-CosyVoice3 ONNX, and Fish Speech 1.5.
-  - Model packages can be downloaded from ModelScope by file whitelist.
-  - Runtime integration for those target models is not complete yet.
-  - System Android TTS fallback is intentionally not used.
-  - Sherpa/native playback runtime must be created lazily on first playback, not during app startup. Eager native initialization can crash the app before the first screen renders.
+- TTS (pluggable engine architecture):
+  - `tts/engine/TtsEngine.kt` — the SPI. `TtsEngine` = synthesize(text)->PCM + sampleRate;
+    `TtsEngineFactory` = readiness (`isImplemented`, `requiredFiles`) + `create()`.
+  - `tts/engine/TtsEngineRegistry.kt` — maps `engineId` -> factory. The single seam between models
+    and runtimes. Adding a model family = register a factory here; nothing else changes.
+  - `tts/EngineTtsPlayer.kt` — engine-agnostic playback (prefetch queue + AudioTrack streaming +
+    inter-sentence pauses + events). It resolves the engine for the selected model via the registry
+    and never references a concrete model.
+  - `TtsModelSpec` is pure metadata: it references an `engineId` and passes runtime-specific paths
+    through `engineParams` (e.g. modelName/lexicon/dictDir/ruleFsts for sherpa-vits). No model logic.
+  - Model availability across the app is DERIVED, not hard-coded: a model is "installed/playable"
+    iff (engine registered AND `isImplemented`) AND all `requiredFiles` are present on disk.
+  - Engines:
+    - `sherpa-vits` (SherpaVitsEngine) — IMPLEMENTED. End-to-end VITS via sherpa-onnx OfflineTts.
+      Default model = MeloTTS zh_en, the first real offline voice. Good fit for narration (a single
+      stable voice; no voice-cloning overhead).
+    - `cosyvoice2`, `cosyvoice3`, `fish-speech` — engine slots present but `isImplemented = false`.
+      Selectable + downloadable; playback disabled until each pipeline ships. See CosyVoice2Engine.kt
+      for the required multi-stage pipeline (LLM token decode -> flow -> hift + speech tokenizer +
+      speaker embedding) — these are NOT runnable through sherpa-onnx OfflineTts.
+  - Download is also decoupled via `DownloadStrategy`: `MODELSCOPE_FILES` (file whitelist) or
+    `ARCHIVE_TAR_BZ2` (single .tar.bz2 from e.g. a sherpa-onnx GitHub release, reusing `extractTarBz2`).
+  - The engine must be created lazily on first playback, not during app startup. Eager native
+    initialization can crash the app before the first screen renders.
 
 ## Implemented Features
 
@@ -58,7 +83,20 @@ This document is the durable project log for architecture decisions, implemented
   - resource size labels
 - APK output includes version in filename.
 
-## Recent Changes (v0.2.7 prep)
+## Recent Changes (v0.3.0 prep — model/runtime decoupling)
+
+- Introduced the `TtsEngine` SPI + `TtsEngineRegistry`; models now plug in behind a stable engine id.
+- Refactored `SherpaTtsPlayer` -> engine-agnostic `EngineTtsPlayer` (playback no longer references a
+  concrete model). Deleted `SherpaTtsPlayer.kt`.
+- Reworked `TtsModelSpec`: removed the hard-coded `availableInApp` flag and sherpa-specific fields
+  (`modelName`/`lexicon`/`ruleFar`/`requiredFiles`); added `engineId`, `engineParams`,
+  `downloadStrategy`. Availability is now derived from the registry + on-disk files.
+- Added a working default voice: MeloTTS zh_en (engine `sherpa-vits`), downloaded as a `.tar.bz2`
+  release asset and extracted on device. The old "not playable until ONNX runtime is integrated"
+  block/message is gone.
+- CosyVoice2/3 and Fish remain as engine slots (`isImplemented = false`) with documented pipelines.
+
+### Earlier (v0.2.7 prep)
 
 - Added `x86_64` to `abiFilters` so debug APKs run on standard Android emulators.
 - Fixed Sleep Timer button row overflow on narrow screens (split into 2×2 grid with weight).
@@ -68,17 +106,21 @@ This document is the durable project log for architecture decisions, implemented
 
 ## Known Traps
 
-- Downloaded model files are not the same as a working runtime. CosyVoice/Fish need ONNX Runtime Mobile plus tokenizer, acoustic/vocoder wiring, and post-processing.
+- Downloaded model files are not the same as a working runtime. CosyVoice/Fish need ONNX Runtime Mobile plus tokenizer, acoustic/vocoder wiring, and post-processing — they do NOT run through sherpa-onnx OfflineTts.
+- The ModelScope repo `Lourdle/CosyVoice2-0.5B_ONNX` ships ONLY the flow + hift back half (no LLM, no speech tokenizer, no speaker embedding). It cannot synthesize text on its own; the "small" size is because it is half a model. A complete export is needed before the `cosyvoice2` engine can be implemented.
+- New models go through the engine SPI. Do not add model-specific branching into `EngineTtsPlayer` / UI / ViewModel; put runtime logic inside a `TtsEngineFactory`/`TtsEngine` and reference it via `engineId`.
 - Do not reintroduce Android system TTS as a quality fallback. It hides runtime gaps and makes test results misleading.
 - Do not initialize TTS native engines in `AudioBookViewModel` construction. Keep startup independent from model runtime availability.
-- ModelScope repositories may contain multiple variants. Download only files listed in `TtsModelSpec.downloadFiles`; do not download the whole repository.
+- ModelScope repositories may contain multiple variants. For `MODELSCOPE_FILES` models download only files listed in `TtsModelSpec.downloadFiles`; do not download the whole repository.
 - Previously imported books keep old parsed metadata. Parser fixes usually require deleting and re-importing the book.
 - Android file managers often restrict `Android/data`. Use USB or a capable file manager to inspect app-specific external files.
 - EPUB WebView reading preserves more layout but is not yet synchronized to sentence index.
 
 ## Current Gaps
 
-- Real CosyVoice2/Fun-CosyVoice3/Fish runtime integration is pending. Downloaded packages are stored locally, but playback must remain disabled until ONNX Runtime Mobile plus the model-specific preprocessing/post-processing chain is implemented.
+- Default offline playback works via the `sherpa-vits` engine (MeloTTS zh_en). This is the shippable voice.
+- CosyVoice2/Fun-CosyVoice3/Fish engines are not yet implemented (slots only). Each needs its own multi-stage ONNX Runtime Mobile pipeline; CosyVoice2 also needs a complete model export (the current repo lacks the LLM/tokenizer). On-device real-time factor for the 0.5B autoregressive decode must be validated (quantize if RTF >= 1) before they can stream.
+- The MeloTTS `engineParams` (lexicon/dict/ruleFsts filenames) should be confirmed against the actual extracted release contents on first integration test; adjust the map if the release layout differs.
 - Reader settings are partially localized; not every small UI string is in the language map yet.
 - EPUB chapter extraction is heuristic from headings/title and may need NCX/nav support.
 - PDF chapter navigation is page-based, not document-outline based.

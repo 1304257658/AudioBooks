@@ -8,10 +8,11 @@ import com.example.audiobooks.model.AudioBook
 import com.example.audiobooks.storage.BookRepository
 import com.example.audiobooks.storage.ModelRepository
 import com.example.audiobooks.storage.TtsModelSpec
+import com.example.audiobooks.tts.EngineTtsPlayer
 import com.example.audiobooks.tts.PlaybackEvent
-import com.example.audiobooks.tts.SherpaTtsPlayer
 import com.example.audiobooks.tts.TtsPlayer
 import com.example.audiobooks.tts.UnavailableTtsPlayer
+import com.example.audiobooks.tts.engine.TtsEngineRegistry
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -104,13 +105,15 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
     fun togglePlayback() {
         val snapshot = _state.value
         val book = snapshot.selectedBook ?: return
-        val selectedModel = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
-        if (selectedModel?.availableInApp == false) {
-            _state.update { it.copy(message = "${selectedModel.name} runtime is not integrated yet.") }
-            return
-        }
         if (!snapshot.modelInstalled) {
-            _state.update { it.copy(message = "Voice model runtime is not ready.") }
+            val model = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
+            val message = when {
+                model == null -> "请先选择语音模型。"
+                !TtsEngineRegistry.isImplemented(model.engineId) ->
+                    "${model.name} 的离线推理引擎仍在开发中，请先选择可用的语音模型（如 MeloTTS）。"
+                else -> "请先下载并安装「${model.name}」后再播放。"
+            }
+            _state.update { it.copy(message = message) }
             return
         }
         if (snapshot.isPlaying) {
@@ -283,7 +286,7 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun selectModel(modelId: String) {
-        (player as? SherpaTtsPlayer)?.clearEngine()
+        (player as? EngineTtsPlayer)?.clearEngine()
         playerEventsJob?.cancel()
         playerEventsJob = null
         player = null
@@ -343,7 +346,7 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun ensurePlayer(): TtsPlayer {
         player?.let { return it }
-        val created = runCatching { SherpaTtsPlayer(getApplication()) }
+        val created = runCatching { EngineTtsPlayer(getApplication()) }
             .getOrElse { error ->
                 UnavailableTtsPlayer("TTS runtime unavailable: ${error.message ?: error::class.java.simpleName}")
             }

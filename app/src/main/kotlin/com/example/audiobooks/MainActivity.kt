@@ -483,7 +483,7 @@ private fun ReaderPane(
             if (!state.modelInstalled) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "Downloaded model packages are not playable until the ONNX runtime is integrated.",
+                    text = "请先下载并安装语音模型后再开始朗读。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

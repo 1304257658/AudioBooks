@@ -1,15 +1,15 @@
-﻿package com.example.audiobooks.tts
+package com.example.audiobooks.tts
 
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
-import com.k2fsa.sherpa.onnx.OfflineTts
-import com.k2fsa.sherpa.onnx.getOfflineTtsConfig
 import com.example.audiobooks.model.BookSentence
 import com.example.audiobooks.storage.LocalProjectPaths
 import com.example.audiobooks.storage.ModelRepository
+import com.example.audiobooks.tts.engine.TtsEngine
+import com.example.audiobooks.tts.engine.TtsEngineRegistry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -23,11 +23,22 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
-class SherpaTtsPlayer(context: Context) : TtsPlayer {
+/**
+ * Engine-agnostic streaming player.
+ *
+ * This class owns ONLY the playback pipeline: prefetch queue, AudioTrack streaming, inter-sentence
+ * pauses and playback events. The actual speech synthesis is delegated to whatever [TtsEngine] the
+ * [TtsEngineRegistry] resolves for the currently selected model. Swapping the underlying model
+ * therefore never touches this file.
+ *
+ * The engine is created lazily on first playback (not at construction / app startup) because some
+ * native runtimes load large graphs that can crash a cold process.
+ */
+class EngineTtsPlayer(context: Context) : TtsPlayer {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val stopped = AtomicBoolean(true)
-    private var tts: OfflineTts? = null
+    private var engine: TtsEngine? = null
     private var track: AudioTrack? = null
     private var rate = 1.0f
 
@@ -42,7 +53,7 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
         scope.launch {
             runCatching {
                 val engine = ensureEngine()
-                val sampleRate = engine.sampleRate()
+                val sampleRate = engine.sampleRate
                 ensureTrack(sampleRate)
                 val queue = Channel<AudioChunk>(capacity = PREFETCH_CHUNKS)
                 val producer = launch {
@@ -51,13 +62,13 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
                         while (!stopped.get() && index in sentences.indices) {
                             val text = sentences[index].text
                             val audio = withContext(Dispatchers.Default) {
-                                engine.generate(text = text, sid = 0, speed = rate)
+                                engine.synthesize(text = text, speakerId = 0, speed = rate)
                             }
                             queue.send(
                                 AudioChunk(
                                     index = index,
                                     text = text,
-                                    samples = audio.samples
+                                    samples = audio
                                 )
                             )
                             index += 1
@@ -66,7 +77,7 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
                         if (!stopped.get()) {
                             _events.emit(
                                 PlaybackEvent.Error(
-                                    "Sherpa TTS generation stopped: ${error.message ?: error::class.java.simpleName}"
+                                    "TTS generation stopped: ${error.message ?: error::class.java.simpleName}"
                                 )
                             )
                         }
@@ -89,7 +100,7 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
                     producer.cancelAndJoin()
                 }
             }.onFailure { error ->
-                _events.emit(PlaybackEvent.Error("Sherpa TTS stopped: ${error.message ?: error::class.java.simpleName}"))
+                _events.emit(PlaybackEvent.Error("TTS stopped: ${error.message ?: error::class.java.simpleName}"))
                 stopped.set(true)
             }
         }
@@ -109,46 +120,33 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
         stop()
         track?.release()
         track = null
-        tts?.release()
-        tts = null
+        engine?.release()
+        engine = null
         scope.cancel()
     }
 
-    private fun ensureEngine(): OfflineTts {
-        tts?.let { return it }
+    private fun ensureEngine(): TtsEngine {
+        engine?.let { return it }
         val modelState = ModelRepository(appContext).state()
         val spec = modelState.selected
-        if (!spec.availableInApp) {
-            error("${spec.name} runtime is not integrated yet.")
+        val factory = TtsEngineRegistry.factory(spec.engineId)
+            ?: error("没有为模型 ${spec.name} 注册推理引擎（engineId=${spec.engineId}）。")
+        if (!factory.isImplemented) {
+            error("${spec.name} 的离线推理引擎仍在开发中。")
         }
         val modelDir = File(LocalProjectPaths(appContext).models, spec.directoryName)
-        val requiredFiles = spec.requiredFiles
-        val missing = requiredFiles.filterNot { File(modelDir, it).isFile }
+        val missing = factory.requiredFiles(spec).filterNot { File(modelDir, it).isFile }
         if (missing.isNotEmpty()) {
-            error(
-                "Voice model is not installed. Use Download model first. Missing: ${missing.joinToString()}"
-            )
+            error("语音模型文件不完整，请先下载。缺少：${missing.joinToString()}")
         }
-        val config = getOfflineTtsConfig(
-            modelDir = modelDir.absolutePath,
-            modelName = spec.modelName,
-            acousticModelName = "",
-            vocoder = "",
-            voices = "",
-            lexicon = spec.lexicon,
-            dataDir = "",
-            dictDir = "",
-            ruleFsts = "",
-            ruleFars = spec.ruleFar?.let { File(modelDir, it).absolutePath }.orEmpty(),
-            numThreads = 4
-        )
-        return OfflineTts(assetManager = null, config = config).also { tts = it }
+        return factory.create(appContext, modelDir, spec).also { engine = it }
     }
 
+    /** Drop the cached engine so the next playback rebuilds it (e.g. after switching models). */
     fun clearEngine() {
         stop()
-        tts?.release()
-        tts = null
+        engine?.release()
+        engine = null
     }
 
     private fun ensureTrack(sampleRate: Int) {
@@ -195,9 +193,9 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
 
     private fun pauseMsFor(text: String): Int =
         when (text.trim().lastOrNull()) {
-            '\u3002', '.', '\uff01', '!', '\uff1f', '?' -> 420
-            '\uff1b', ';' -> 320
-            '\uff0c', '\u3001', ',', '\uff1a', ':' -> 220
+            '。', '.', '！', '!', '？', '?' -> 420
+            '；', ';' -> 320
+            '，', '、', ',', '：', ':' -> 220
             else -> 260
         }
 
@@ -211,5 +209,3 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
         private const val PREFETCH_CHUNKS = 4
     }
 }
-
-
