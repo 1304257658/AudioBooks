@@ -283,35 +283,6 @@ private fun AudioBooksScreen(
                     modifier = Modifier.fillMaxSize()
                 )
             }
-            if (state.modelDownloadProgressById.isNotEmpty()) {
-                DownloadProgressOverlay(
-                    state = state,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(12.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DownloadProgressOverlay(state: AudioBookUiState, modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(8.dp),
-        shadowElevation = 8.dp
-    ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Downloads", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            state.modelDownloadProgressById.forEach { (modelId, progress) ->
-                val name = state.models.firstOrNull { it.id == modelId }?.name ?: modelId
-                Text(
-                    text = "$name ${(progress * 100).roundToInt()}%",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
         }
     }
 }
