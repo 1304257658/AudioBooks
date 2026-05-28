@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
                     onTogglePlayback = viewModel::togglePlayback,
                     onJump = viewModel::jumpBy,
                     onRateChange = viewModel::setSpeechRate,
+                    onDownloadModel = viewModel::downloadModel,
                     onMessageShown = viewModel::clearMessage
                 )
             }
@@ -86,6 +87,7 @@ private fun AudioBooksScreen(
     onTogglePlayback: () -> Unit,
     onJump: (Int) -> Unit,
     onRateChange: (Float) -> Unit,
+    onDownloadModel: () -> Unit,
     onMessageShown: () -> Unit
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
@@ -151,6 +153,7 @@ private fun AudioBooksScreen(
                         onTogglePlayback = onTogglePlayback,
                         onJump = onJump,
                         onRateChange = onRateChange,
+                        onDownloadModel = onDownloadModel,
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(0.66f)
@@ -178,6 +181,7 @@ private fun AudioBooksScreen(
                         onTogglePlayback = onTogglePlayback,
                         onJump = onJump,
                         onRateChange = onRateChange,
+                        onDownloadModel = onDownloadModel,
                         modifier = Modifier
                             .weight(0.58f)
                             .fillMaxSize()
@@ -278,6 +282,7 @@ private fun ReaderPane(
     onTogglePlayback: () -> Unit,
     onJump: (Int) -> Unit,
     onRateChange: (Float) -> Unit,
+    onDownloadModel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val book = state.selectedBook
@@ -300,6 +305,12 @@ private fun ReaderPane(
             Spacer(Modifier.height(4.dp))
             Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        Spacer(Modifier.height(16.dp))
+
+        ModelStatusPanel(
+            state = state,
+            onDownloadModel = onDownloadModel
+        )
         Spacer(Modifier.height(16.dp))
 
         Text(
@@ -346,7 +357,8 @@ private fun ReaderPane(
             }
             Button(
                 onClick = onTogglePlayback,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                enabled = state.modelInstalled && state.modelDownloadProgress == null
             ) {
                 Text(if (state.isPlaying) "Pause" else "Play")
             }
@@ -371,6 +383,46 @@ private fun ReaderPane(
 }
 
 @Composable
+private fun ModelStatusPanel(
+    state: AudioBookUiState,
+    onDownloadModel: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = if (state.modelInstalled) Color(0xFFE6F2EC) else Color(0xFFFFF4DD),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                text = if (state.modelInstalled) "Voice model ready" else "Voice model required",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (!state.modelInstalled) {
+                Text(
+                    text = "Download the public Sherpa model before playback. Books and progress stay local.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (state.modelDownloadProgress != null) {
+                    Text(
+                        text = "Downloading ${(state.modelDownloadProgress * 100).roundToInt()}%",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else {
+                    Button(
+                        onClick = onDownloadModel,
+                        enabled = !state.isBusy
+                    ) {
+                        Text("Download model")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun AudioBooksTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = MaterialTheme.colorScheme.copy(
@@ -384,4 +436,3 @@ private fun AudioBooksTheme(content: @Composable () -> Unit) {
         content = content
     )
 }
-

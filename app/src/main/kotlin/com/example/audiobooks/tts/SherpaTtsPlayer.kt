@@ -8,6 +8,8 @@ import android.media.AudioTrack
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.getOfflineTtsConfig
 import com.example.audiobooks.model.BookSentence
+import com.example.audiobooks.storage.LocalProjectPaths
+import com.example.audiobooks.storage.ModelRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -52,7 +54,7 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
                     index += 1
                 }
             }.onFailure { error ->
-                _events.emit(PlaybackEvent.Error("Sherpa TTS 澶辫触锛屽凡鍋滄: ${error.message ?: error::class.java.simpleName}"))
+                _events.emit(PlaybackEvent.Error("Sherpa TTS stopped: ${error.message ?: error::class.java.simpleName}"))
                 stopped.set(true)
             }
         }
@@ -79,14 +81,12 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
 
     private fun ensureEngine(): OfflineTts {
         tts?.let { return it }
-        val modelDir = File(appContext.filesDir, "models/vits-icefall-zh-aishell3")
-        val requiredFiles = listOf("model.onnx", "lexicon.txt", "tokens.txt", "rule.far")
+        val modelDir = File(LocalProjectPaths(appContext).models, ModelRepository.MODEL_DIR_NAME)
+        val requiredFiles = ModelRepository.REQUIRED_FILES
         val missing = requiredFiles.filterNot { File(modelDir, it).isFile }
         if (missing.isNotEmpty()) {
             error(
-                "Voice model is not installed. Download vits-icefall-zh-aishell3.tar.bz2 from " +
-                    MODEL_URL + " and extract it to app private models/vits-icefall-zh-aishell3. " +
-                    "Missing: ${missing.joinToString()}"
+                "Voice model is not installed. Use Download model first. Missing: ${missing.joinToString()}"
             )
         }
         val config = getOfflineTtsConfig(
@@ -141,10 +141,6 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
         track?.write(pcm, 0, pcm.size)
     }
 
-    private companion object {
-        const val MODEL_URL =
-            "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2"
-    }
 }
 
 

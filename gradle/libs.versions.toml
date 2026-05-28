@@ -6,6 +6,7 @@ activityCompose = "1.12.1"
 lifecycle = "2.10.0"
 jsoup = "1.21.2"
 coroutines = "1.10.2"
+commonsCompress = "1.28.0"
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
@@ -22,4 +23,5 @@ compose-ui = { module = "androidx.compose.ui:ui" }
 compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
 compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
 coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commonsCompress" }
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }

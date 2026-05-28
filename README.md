@@ -10,8 +10,10 @@
 - 书架、当前句子预览、播放/暂停、上一句/下一句。
 - 0.5x 到 3.0x 语速控制。
 - 支持 Sherpa-ONNX 中文 VITS 音色模型；模型不提交到 Git，也不随 APK 打包。
+- 首次播放前在 App 内提示下载公开模型。
 - 本地 JSON 保存书籍解析结果和播放进度。
-- Manifest 不声明 `INTERNET` 权限。
+- 允许联网下载公开模型；不上传书籍、播放记录或设备信息。
+- 用户数据统一保存在 App 私有 `audiobooks-data/` 目录下，包含 `books/`、`models/`、`downloads/`。
 
 ## 本机构建
 
@@ -39,7 +41,7 @@ app\build\outputs\apk\debug\app-debug.apk
 
 首版只做 EPUB。PDF、MOBI/AZW3、OCR、音频缓存、模型下载器 UI 和后台 MediaSession 都保留为后续切片。
 
-当前 TTS 后端使用 Sherpa-ONNX `vits-icefall-zh-aishell3`。模型下载链接内置在代码中：
+当前 TTS 后端使用 Sherpa-ONNX `vits-icefall-zh-aishell3`。模型下载链接内置在代码中，App 会在缺少模型时提示用户下载：
 
 ```text
 https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2

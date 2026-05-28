@@ -48,6 +48,7 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.coroutines.android)
+    implementation(libs.commons.compress)
     implementation(libs.jsoup)
 
     debugImplementation(libs.compose.ui.tooling)

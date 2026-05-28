@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.audiobooks.model.AudioBook
 import com.example.audiobooks.storage.BookRepository
+import com.example.audiobooks.storage.ModelRepository
 import com.example.audiobooks.tts.PlaybackEvent
 import com.example.audiobooks.tts.SherpaTtsPlayer
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,12 +21,16 @@ data class AudioBookUiState(
     val currentSentenceIndex: Int = 0,
     val isPlaying: Boolean = false,
     val speechRate: Float = 1.0f,
+    val modelInstalled: Boolean = false,
+    val modelDownloadUrl: String = "",
+    val modelDownloadProgress: Float? = null,
     val isBusy: Boolean = false,
     val message: String? = null
 )
 
 class AudioBookViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = BookRepository(application)
+    private val modelRepository = ModelRepository(application)
     private val player = SherpaTtsPlayer(application)
     private val _state = MutableStateFlow(AudioBookUiState())
     val state: StateFlow<AudioBookUiState> = _state.asStateFlow()
@@ -33,6 +38,7 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
     init {
         viewModelScope.launch {
             refreshBooks()
+            refreshModelState()
         }
         viewModelScope.launch {
             player.events.collect { event ->
@@ -59,10 +65,10 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
             runCatching { repository.importEpub(uri) }
                 .onSuccess { book ->
                     refreshBooks(book.id)
-                    _state.update { it.copy(message = "宸插鍏? ${book.title}") }
+                    _state.update { it.copy(message = "Imported: ${book.title}") }
                 }
                 .onFailure { error ->
-                    _state.update { it.copy(message = error.message ?: "瀵煎叆澶辫触") }
+                    _state.update { it.copy(message = error.message ?: "Import failed.") }
                 }
             _state.update { it.copy(isBusy = false) }
         }
@@ -83,6 +89,10 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
     fun togglePlayback() {
         val snapshot = _state.value
         val book = snapshot.selectedBook ?: return
+        if (!snapshot.modelInstalled) {
+            _state.update { it.copy(message = "Voice model is not installed. Download it first.") }
+            return
+        }
         if (snapshot.isPlaying) {
             player.stop()
             _state.update { it.copy(isPlaying = false) }
@@ -106,6 +116,23 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
         _state.update { it.copy(speechRate = rate.coerceIn(0.5f, 3.0f)) }
     }
 
+    fun downloadModel() {
+        viewModelScope.launch {
+            _state.update { it.copy(isBusy = true, modelDownloadProgress = 0f, message = null) }
+            runCatching {
+                modelRepository.downloadAndInstall { progress ->
+                    _state.update { it.copy(modelDownloadProgress = progress) }
+                }
+            }.onSuccess {
+                refreshModelState()
+                _state.update { it.copy(message = "Voice model installed.") }
+            }.onFailure { error ->
+                _state.update { it.copy(message = error.message ?: "Model download failed.") }
+            }
+            _state.update { it.copy(isBusy = false, modelDownloadProgress = null) }
+        }
+    }
+
     fun clearMessage() {
         _state.update { it.copy(message = null) }
     }
@@ -125,6 +152,16 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
                 books = books,
                 selectedBook = selected,
                 currentSentenceIndex = selected?.currentSentenceIndex?.coerceInBook(selected) ?: 0
+            )
+        }
+    }
+
+    private fun refreshModelState() {
+        val model = modelRepository.state()
+        _state.update {
+            it.copy(
+                modelInstalled = model.installed,
+                modelDownloadUrl = model.downloadUrl
             )
         }
     }

@@ -14,16 +14,17 @@ import java.io.File
 
 class BookRepository(private val context: Context) {
     private val parser = EpubParser()
-    private val booksDir = File(context.filesDir, "books")
-    private val indexFile = File(context.filesDir, "library.json")
+    private val paths = LocalProjectPaths(context)
+    private val booksDir = paths.books
+    private val indexFile = paths.libraryIndex
 
     suspend fun loadBooks(): List<AudioBook> = withContext(Dispatchers.IO) {
-        booksDir.mkdirs()
+        paths.ensure()
         readIndex().mapNotNull { id -> loadBook(id) }
     }
 
     suspend fun importEpub(uri: Uri): AudioBook = withContext(Dispatchers.IO) {
-        booksDir.mkdirs()
+        paths.ensure()
         val id = System.currentTimeMillis().toString()
         val targetDir = File(booksDir, id).apply { mkdirs() }
         val originalName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -32,7 +33,7 @@ class BookRepository(private val context: Context) {
         } ?: "imported.epub"
         val epubFile = File(targetDir, "book.epub")
         context.contentResolver.openInputStream(uri).use { input ->
-            requireNotNull(input) { "鏃犳硶鎵撳紑閫夋嫨鐨?EPUB 鏂囦欢" }
+            requireNotNull(input) { "Cannot open the selected EPUB file." }
             epubFile.outputStream().use { output -> input.copyTo(output) }
         }
 
