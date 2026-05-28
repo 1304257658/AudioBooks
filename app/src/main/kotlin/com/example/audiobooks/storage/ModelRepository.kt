@@ -14,6 +14,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.Locale
 
 data class TtsModelSpec(
     val id: String,
@@ -25,6 +26,8 @@ data class TtsModelSpec(
     val archiveName: String,
     val downloadUrl: String,
     val modelScopeRepoId: String,
+    val downloadFiles: List<String>,
+    val sizeBytes: Long,
     val modelName: String = "model.onnx",
     val lexicon: String = "lexicon.txt",
     val ruleFar: String? = null,
@@ -32,6 +35,9 @@ data class TtsModelSpec(
 ) {
     val requiredFiles: List<String>
         get() = listOfNotNull(modelName, lexicon, "tokens.txt", ruleFar)
+
+    val sizeLabel: String
+        get() = formatBytes(sizeBytes)
 }
 
 data class ModelInstallState(
@@ -41,6 +47,7 @@ data class ModelInstallState(
     val installedIds: Set<String>,
     val installed: Boolean,
     val modelDir: File,
+    val dataRoot: File,
     val downloadUrl: String
 )
 
@@ -60,6 +67,7 @@ class ModelRepository(context: Context) {
             installedIds = installedIds,
             installed = selected.id in installedIds,
             modelDir = modelDir(selected),
+            dataRoot = paths.root,
             downloadUrl = selected.downloadUrl
         )
     }
@@ -72,14 +80,19 @@ class ModelRepository(context: Context) {
 
     suspend fun deleteSelectedModel() = withContext(Dispatchers.IO) {
         val spec = selectedModel()
+        deleteModel(spec.id)
+    }
+
+    suspend fun deleteModel(modelId: String) = withContext(Dispatchers.IO) {
+        val spec = MODELS.firstOrNull { it.id == modelId } ?: return@withContext
         val dir = modelDir(spec)
         if (dir.exists()) dir.deleteRecursively()
         File(paths.downloads, spec.archiveName).takeIf { it.exists() }?.delete()
     }
 
-    suspend fun downloadAndInstall(onProgress: (Float) -> Unit) = withContext(Dispatchers.IO) {
+    suspend fun downloadAndInstall(modelId: String, onProgress: (Float) -> Unit) = withContext(Dispatchers.IO) {
         paths.ensure()
-        val spec = selectedModel()
+        val spec = MODELS.firstOrNull { it.id == modelId } ?: selectedModel()
         showProgressNotification(spec.name, 0)
         downloadModelScopeSnapshot(spec) { progress ->
             val percent = (progress * 100).toInt().coerceIn(0, 100)
@@ -101,22 +114,28 @@ class ModelRepository(context: Context) {
         val tmpDir = File(paths.models, "${spec.directoryName}.tmp")
         if (tmpDir.exists()) tmpDir.deleteRecursively()
         tmpDir.mkdirs()
-        val files = modelScopeFiles(spec.modelScopeRepoId)
-            .filterNot { it.endsWith("/") }
-            .filterNot { it == ".gitattributes" || it.equals("README.md", ignoreCase = true) }
+        val available = modelScopeFiles(spec.modelScopeRepoId).toSet()
+        val files = spec.downloadFiles.filter { it in available }
+        val missing = spec.downloadFiles.filterNot { it in available }
+        require(missing.isEmpty()) { "Model repository is missing expected files: ${missing.joinToString()}" }
         require(files.isNotEmpty()) { "No downloadable model files were found." }
 
+        val totalBytes = spec.sizeBytes.takeIf { it > 0L } ?: files.size.toLong()
+        var downloadedBytes = 0L
         files.forEachIndexed { index, relativePath ->
             val target = File(tmpDir, relativePath).canonicalFile
             require(target.path.startsWith(tmpDir.canonicalPath)) {
                 "Model repository contains an unsafe path."
             }
             target.parentFile?.mkdirs()
-            val baseProgress = index.toFloat() / files.size
-            val fileShare = 1f / files.size
-            download(modelScopeDownloadUrl(spec.modelScopeRepoId, relativePath), target) { fileProgress ->
-                onProgress((baseProgress + fileShare * fileProgress).coerceIn(0f, 1f))
+            var lastFileBytes = 0L
+            download(modelScopeDownloadUrl(spec.modelScopeRepoId, relativePath), target) { _, fileBytes ->
+                val current = downloadedBytes + fileBytes
+                onProgress((current.toFloat() / totalBytes).coerceIn(0f, 1f))
+                lastFileBytes = fileBytes
             }
+            downloadedBytes += lastFileBytes
+            onProgress((downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f))
         }
 
         if (targetDir.exists()) targetDir.deleteRecursively()
@@ -143,7 +162,7 @@ class ModelRepository(context: Context) {
         return "https://www.modelscope.cn/api/v1/models/$repoId/repo?Revision=master&FilePath=$encodedPath"
     }
 
-    private fun download(url: String, target: File, onProgress: (Float) -> Unit) {
+    private fun download(url: String, target: File, onProgress: (Float, Long) -> Unit) {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 60_000
@@ -159,11 +178,11 @@ class ModelRepository(context: Context) {
                     if (read < 0) break
                     output.write(buffer, 0, read)
                     copied += read
-                    if (length != null) onProgress((copied.toFloat() / length).coerceIn(0f, 1f))
+                    if (length != null) onProgress((copied.toFloat() / length).coerceIn(0f, 1f), copied)
                 }
             }
         }
-        onProgress(1f)
+        onProgress(1f, target.length())
     }
 
     private fun extractTarBz2(archive: File, destination: File) {
@@ -261,7 +280,12 @@ class ModelRepository(context: Context) {
                 archiveName = "CosyVoice2-0.5B_ONNX.zip",
                 downloadUrl = "https://www.modelscope.cn/models/Lourdle/CosyVoice2-0.5B_ONNX",
                 modelScopeRepoId = "Lourdle/CosyVoice2-0.5B_ONNX",
-                approximateSize = "ModelScope"
+                downloadFiles = listOf(
+                    "configuration.json",
+                    "flow_hift_combined_fp16.onnx"
+                ),
+                sizeBytes = 335_737_054L + 25L,
+                approximateSize = formatBytes(335_737_054L + 25L)
             ),
             TtsModelSpec(
                 id = "cosyvoice3-onnx",
@@ -273,7 +297,15 @@ class ModelRepository(context: Context) {
                 archiveName = "cosy-voice3-onnx.zip",
                 downloadUrl = "https://www.modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
                 modelScopeRepoId = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-                approximateSize = "ModelScope"
+                downloadFiles = listOf(
+                    "configuration.json",
+                    "cosyvoice3.yaml",
+                    "campplus.onnx",
+                    "flow.decoder.estimator.fp32.onnx",
+                    "speech_tokenizer_v3.onnx"
+                ),
+                sizeBytes = 47L + 6_934L + 28_303_423L + 1_326_216_933L + 969_451_503L,
+                approximateSize = formatBytes(47L + 6_934L + 28_303_423L + 1_326_216_933L + 969_451_503L)
             ),
             TtsModelSpec(
                 id = "fish-speech-1.5",
@@ -285,8 +317,26 @@ class ModelRepository(context: Context) {
                 archiveName = "fish-speech-1.5.zip",
                 downloadUrl = "https://www.modelscope.cn/models/fishaudio/fish-speech-1.5",
                 modelScopeRepoId = "fishaudio/fish-speech-1.5",
-                approximateSize = "Conversion required"
+                downloadFiles = listOf(
+                    "config.json",
+                    "firefly-gan-vq-fsq-8x1024-21hz-generator.pth",
+                    "model.pth",
+                    "special_tokens.json",
+                    "tokenizer.tiktoken"
+                ),
+                sizeBytes = 697L + 188_518_579L + 1_275_908_030L + 30_964L + 1_698_810L,
+                approximateSize = formatBytes(697L + 188_518_579L + 1_275_908_030L + 30_964L + 1_698_810L)
             )
         )
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    val mb = bytes / 1024.0 / 1024.0
+    val gb = mb / 1024.0
+    return if (gb >= 1.0) {
+        String.format(Locale.US, "%.2f GB", gb)
+    } else {
+        String.format(Locale.US, "%.0f MB", mb)
     }
 }

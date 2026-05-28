@@ -94,13 +94,14 @@ class MainActivity : ComponentActivity() {
                     onRateChange = viewModel::setSpeechRate,
                     onSelectModel = viewModel::selectModel,
                     onDownloadModel = viewModel::downloadModel,
-                    onDeleteModel = viewModel::deleteSelectedModel,
+                    onDeleteModel = viewModel::deleteModel,
                     onAddAnnotation = viewModel::addAnnotation,
                     onDeleteAnnotation = viewModel::deleteAnnotation,
                     onExportAnnotations = viewModel::exportAnnotations,
                     onSearchChange = viewModel::updateSearch,
                     onJumpTo = viewModel::jumpTo,
                     onReaderSettingsChange = viewModel::updateReaderSettings,
+                    onResetReaderSettings = viewModel::resetReaderSettings,
                     onRepeatCountChange = viewModel::setRepeatCount,
                     onMarkRepeatStart = viewModel::markRepeatStart,
                     onMarkRepeatEnd = viewModel::markRepeatEnd,
@@ -123,14 +124,15 @@ private fun AudioBooksScreen(
     onJump: (Int) -> Unit,
     onRateChange: (Float) -> Unit,
     onSelectModel: (String) -> Unit,
-    onDownloadModel: () -> Unit,
-    onDeleteModel: () -> Unit,
+    onDownloadModel: (String) -> Unit,
+    onDeleteModel: (String) -> Unit,
     onAddAnnotation: (Int, String, String) -> Unit,
     onDeleteAnnotation: (String) -> Unit,
     onExportAnnotations: () -> Unit,
     onSearchChange: (String) -> Unit,
     onJumpTo: (Int) -> Unit,
     onReaderSettingsChange: (ReaderSettings) -> Unit,
+    onResetReaderSettings: () -> Unit,
     onRepeatCountChange: (Int) -> Unit,
     onMarkRepeatStart: () -> Unit,
     onMarkRepeatEnd: () -> Unit,
@@ -139,6 +141,7 @@ private fun AudioBooksScreen(
     onMessageShown: () -> Unit
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
+    val lang = state.readerSettings.language
     var currentScreen by remember { mutableStateOf(AppScreen.Library) }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) onImport(uri)
@@ -165,8 +168,8 @@ private fun AudioBooksScreen(
                     title = {
                         Text(
                             when (currentScreen) {
-                                AppScreen.Settings -> "Settings"
-                                AppScreen.Chapters -> "Chapters"
+                                AppScreen.Settings -> uiText(lang, "settings")
+                                AppScreen.Chapters -> uiText(lang, "chapters")
                                 else -> "AudioBooks"
                             },
                             maxLines = 1,
@@ -180,14 +183,14 @@ private fun AudioBooksScreen(
                                     currentScreen = if (currentScreen == AppScreen.Chapters) AppScreen.Reader else AppScreen.Library
                                 }
                             ) {
-                                Text("Back")
+                                Text(uiText(lang, "back"))
                             }
                         }
                     },
                     actions = {
                         if (currentScreen != AppScreen.Settings) {
                             TextButton(onClick = { currentScreen = AppScreen.Settings }) {
-                                Text("Settings")
+                                Text(uiText(lang, "settings"))
                             }
                         }
                         if (currentScreen == AppScreen.Library) {
@@ -205,7 +208,7 @@ private fun AudioBooksScreen(
                                     )
                                 }
                             ) {
-                                Text("Import")
+                                Text(uiText(lang, "import"))
                             }
                         }
                     },
@@ -233,12 +236,14 @@ private fun AudioBooksScreen(
                         onSelectBook(book)
                         currentScreen = AppScreen.Reader
                     },
+                    lang = lang,
                     modifier = Modifier.fillMaxSize()
                 )
                 AppScreen.Reader -> ReaderPane(
                     state = state,
                     onTogglePlayback = onTogglePlayback,
                     onJump = onJump,
+                    onRateChange = onRateChange,
                     onOpenChapters = { currentScreen = AppScreen.Chapters },
                     onAddAnnotation = onAddAnnotation,
                     onSearchChange = onSearchChange,
@@ -246,6 +251,7 @@ private fun AudioBooksScreen(
                     onDeleteAnnotation = onDeleteAnnotation,
                     onExportAnnotations = onExportAnnotations,
                     onReaderSettingsChange = onReaderSettingsChange,
+                    onResetReaderSettings = onResetReaderSettings,
                     onRepeatCountChange = onRepeatCountChange,
                     onMarkRepeatStart = onMarkRepeatStart,
                     onMarkRepeatEnd = onMarkRepeatEnd,
@@ -265,14 +271,44 @@ private fun AudioBooksScreen(
                     state = state,
                     onRateChange = onRateChange,
                     onSelectModel = onSelectModel,
+                    onReaderSettingsChange = onReaderSettingsChange,
                     onDeleteModel = onDeleteModel,
-                    onDownloadModel = {
+                    onDownloadModel = { modelId ->
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                         }
-                        onDownloadModel()
+                        onDownloadModel(modelId)
                     },
                     modifier = Modifier.fillMaxSize()
+                )
+            }
+            if (state.modelDownloadProgressById.isNotEmpty()) {
+                DownloadProgressOverlay(
+                    state = state,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(12.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DownloadProgressOverlay(state: AudioBookUiState, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(8.dp),
+        shadowElevation = 8.dp
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Downloads", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            state.modelDownloadProgressById.forEach { (modelId, progress) ->
+                val name = state.models.firstOrNull { it.id == modelId }?.name ?: modelId
+                Text(
+                    text = "$name ${(progress * 100).roundToInt()}%",
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
         }
@@ -285,12 +321,13 @@ private fun LibraryPane(
     selectedId: String?,
     isBusy: Boolean,
     onSelectBook: (AudioBook) -> Unit,
+    lang: String,
     modifier: Modifier = Modifier
 ) {
     Column(modifier.padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "Library",
+                text = uiText(lang, "library"),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold
             )
@@ -375,6 +412,7 @@ private fun ReaderPane(
     state: AudioBookUiState,
     onTogglePlayback: () -> Unit,
     onJump: (Int) -> Unit,
+    onRateChange: (Float) -> Unit,
     onOpenChapters: () -> Unit,
     onAddAnnotation: (Int, String, String) -> Unit,
     onSearchChange: (String) -> Unit,
@@ -382,6 +420,7 @@ private fun ReaderPane(
     onDeleteAnnotation: (String) -> Unit,
     onExportAnnotations: () -> Unit,
     onReaderSettingsChange: (ReaderSettings) -> Unit,
+    onResetReaderSettings: () -> Unit,
     onRepeatCountChange: (Int) -> Unit,
     onMarkRepeatStart: () -> Unit,
     onMarkRepeatEnd: () -> Unit,
@@ -390,12 +429,18 @@ private fun ReaderPane(
     modifier: Modifier = Modifier
 ) {
     val book = state.selectedBook
+    val lang = state.readerSettings.language
+    val readerBackground = when (state.readerSettings.background) {
+        "paper" -> Color(0xFFF3ECD8)
+        "black" -> Color(0xFF050505)
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
     var showReaderTools by remember { mutableStateOf(false) }
     Box(modifier) {
     Column(Modifier.fillMaxSize().padding(20.dp)) {
         if (book == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Select a book to start listening", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(uiText(lang, "selectBook"), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             return
         }
@@ -408,10 +453,10 @@ private fun ReaderPane(
                 modifier = Modifier.weight(1f)
             )
             TextButton(onClick = onOpenChapters) {
-                Text("Chapters")
+                Text(uiText(lang, "chapters"))
             }
             TextButton(onClick = { showReaderTools = !showReaderTools }) {
-                Text("Reader")
+                Text(uiText(lang, "reader"))
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -419,7 +464,7 @@ private fun ReaderPane(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            color = MaterialTheme.colorScheme.surfaceVariant,
+            color = readerBackground,
             shape = RoundedCornerShape(8.dp)
         ) {
             if (state.readerHtmlUrl != null) {
@@ -441,24 +486,24 @@ private fun ReaderPane(
                 enabled = state.currentSentenceIndex > 0,
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
             ) {
-                Text("Prev")
+                Text(uiText(lang, "prev"))
             }
             Button(
                 onClick = onTogglePlayback,
                 modifier = Modifier.weight(1f),
-                enabled = state.modelInstalled && state.modelDownloadProgress == null,
+                enabled = state.modelInstalled,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (state.isPlaying) Color(0xFF9B3A35) else MaterialTheme.colorScheme.primary
                 )
             ) {
-                Text(if (state.isPlaying) "Stop" else "Start")
+                Text(if (state.isPlaying) uiText(lang, "stop") else uiText(lang, "start"))
             }
             Button(
                 onClick = { onJump(1) },
                 enabled = state.currentSentenceIndex < book.sentences.lastIndex,
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
             ) {
-                Text("Next")
+                Text(uiText(lang, "next"))
             }
         }
     }
@@ -480,17 +525,18 @@ private fun ReaderPane(
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                "Reader tools",
+                                uiText(lang, "readerTools"),
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.weight(1f)
                             )
                             TextButton(onClick = { showReaderTools = false }) {
-                                Text("Close")
+                                Text(uiText(lang, "close"))
                             }
                         }
                     }
                     item { SearchPanel(state, onSearchChange, onJumpTo) }
+                    item { SpeedPanel(state = state, onRateChange = onRateChange) }
                     item { AnnotationPanel(state, onJumpTo, onDeleteAnnotation, onExportAnnotations) }
                     item { SleepTimerPanel(state, onStartSleepTimer) }
                     item {
@@ -502,7 +548,13 @@ private fun ReaderPane(
                             onClearRepeatRange = onClearRepeatRange
                         )
                     }
-                    item { ReaderStylePanel(state.readerSettings, onReaderSettingsChange) }
+                    item {
+                        ReaderStylePanel(
+                            settings = state.readerSettings,
+                            onReaderSettingsChange = onReaderSettingsChange,
+                            onResetReaderSettings = onResetReaderSettings
+                        )
+                    }
                 }
             }
         }
@@ -568,8 +620,9 @@ private fun SettingsPane(
     state: AudioBookUiState,
     onRateChange: (Float) -> Unit,
     onSelectModel: (String) -> Unit,
-    onDeleteModel: () -> Unit,
-    onDownloadModel: () -> Unit,
+    onReaderSettingsChange: (ReaderSettings) -> Unit,
+    onDeleteModel: (String) -> Unit,
+    onDownloadModel: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -586,22 +639,10 @@ private fun SettingsPane(
             )
         }
         item {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Playback", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    Text("Speed ${String.format(Locale.US, "%.2f", state.speechRate)}x")
-                    Slider(
-                        value = state.speechRate,
-                        onValueChange = onRateChange,
-                        valueRange = 0.5f..3.0f,
-                        steps = 249
-                    )
-                }
-            }
+            LanguagePanel(state.readerSettings, onReaderSettingsChange)
+        }
+        item {
+            StoragePanel(state)
         }
     }
 }
@@ -610,10 +651,9 @@ private fun SettingsPane(
 private fun ModelStatusPanel(
     state: AudioBookUiState,
     onSelectModel: (String) -> Unit,
-    onDeleteModel: () -> Unit,
-    onDownloadModel: () -> Unit
+    onDeleteModel: (String) -> Unit,
+    onDownloadModel: (String) -> Unit
 ) {
-    val selectedModel = state.models.firstOrNull { it.id == state.selectedModelId }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -625,6 +665,7 @@ private fun ModelStatusPanel(
                 val selected = model.id == state.selectedModelId
                 val downloaded = model.id in state.downloadedModelIds
                 val installed = model.id in state.installedModelIds
+                val progress = state.modelDownloadProgressById[model.id]
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -639,7 +680,7 @@ private fun ModelStatusPanel(
                     Column(Modifier.weight(1f)) {
                         Text(model.name, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
                         Text(
-                            "${model.runtime} / ${if (downloaded) "downloaded" else if (installed) "installed" else "not downloaded"}",
+                            "${model.sizeLabel} / ${model.runtime} / ${if (downloaded) "downloaded" else if (installed) "installed" else "not downloaded"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -653,48 +694,27 @@ private fun ModelStatusPanel(
                     }
                     if (selected) Text("Selected", style = MaterialTheme.typography.labelMedium)
                 }
-            }
-
-            when {
-                state.modelDownloadProgress != null -> {
-                    Text("Downloading ${(state.modelDownloadProgress * 100).roundToInt()}%")
-                }
-                selectedModel?.availableInApp == true && !state.modelInstalled -> {
-                    Text(
-                        text = "Downloads continue in app storage and report progress in the status bar.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Button(onClick = onDownloadModel, enabled = !state.isBusy) {
-                        Text("Download model")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (progress != null) {
+                        Text("Downloading ${(progress * 100).roundToInt()}%")
+                    } else {
+                        Button(
+                            onClick = { onDownloadModel(model.id) },
+                            enabled = !downloaded
+                        ) {
+                            Text(if (downloaded) "Downloaded" else "Download model")
+                        }
+                    }
+                    TextButton(onClick = { onDeleteModel(model.id) }, enabled = downloaded) {
+                        Text("Delete")
                     }
                 }
-                selectedModel?.availableInApp == false -> {
-                    Text(
-                        text = "The package can be downloaded automatically. Runtime integration is still pending.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Button(
-                        onClick = onDownloadModel,
-                        enabled = !state.isBusy && selectedModel.id !in state.downloadedModelIds
-                    ) {
-                        Text(if (selectedModel.id in state.downloadedModelIds) "Downloaded" else "Download model")
-                    }
-                }
-                state.modelInstalled -> {
-                    Text(
-                        text = "Ready for offline playback.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
             }
-            if (selectedModel != null) {
-                TextButton(onClick = onDeleteModel, enabled = !state.isBusy) {
-                    Text("Delete selected package")
-                }
-            }
+            Text(
+                text = "Downloads run in the background. Runtime integration is still pending for these target models.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -708,6 +728,7 @@ private fun TextReader(
     modifier: Modifier = Modifier
 ) {
     val book = state.selectedBook ?: return
+    val normalTextColor = if (state.readerSettings.background == "black") Color.White else MaterialTheme.colorScheme.onSurface
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(book.id, state.currentSentenceIndex) {
         listState.animateScrollToItem(state.currentSentenceIndex.coerceIn(0, book.sentences.lastIndex))
@@ -730,7 +751,7 @@ private fun TextReader(
                     )
                 },
                 fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                color = if (active) MaterialTheme.colorScheme.primary else normalTextColor,
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(
@@ -776,6 +797,27 @@ private fun SearchPanel(
                         .padding(6.dp)
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun SpeedPanel(state: AudioBookUiState, onRateChange: (Float) -> Unit) {
+    Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Speed", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("${String.format(Locale.US, "%.2f", state.speechRate)}x", modifier = Modifier.weight(1f))
+                TextButton(onClick = { onRateChange(1.0f) }) {
+                    Text("Reset")
+                }
+            }
+            Slider(
+                value = state.speechRate,
+                onValueChange = onRateChange,
+                valueRange = 0.5f..3.0f,
+                steps = 249
+            )
         }
     }
 }
@@ -843,6 +885,59 @@ private fun SleepTimerPanel(state: AudioBookUiState, onStartSleepTimer: (Int?) -
 private fun TextUnit.scaleBy(value: Float): TextUnit =
     if (this == TextUnit.Unspecified) this else this * value
 
+private fun uiText(language: String, key: String): String {
+    val zh = mapOf(
+        "settings" to "设置",
+        "chapters" to "章节",
+        "back" to "返回",
+        "import" to "导入",
+        "library" to "书架",
+        "selectBook" to "先选择一本书",
+        "reader" to "阅读",
+        "readerTools" to "阅读工具",
+        "close" to "关闭",
+        "prev" to "上一句",
+        "next" to "下一句",
+        "start" to "开始",
+        "stop" to "停止"
+    )
+    val ja = mapOf(
+        "settings" to "設定",
+        "chapters" to "章",
+        "back" to "戻る",
+        "import" to "追加",
+        "library" to "本棚",
+        "selectBook" to "本を選択してください",
+        "reader" to "読書",
+        "readerTools" to "読書ツール",
+        "close" to "閉じる",
+        "prev" to "前へ",
+        "next" to "次へ",
+        "start" to "開始",
+        "stop" to "停止"
+    )
+    val en = mapOf(
+        "settings" to "Settings",
+        "chapters" to "Chapters",
+        "back" to "Back",
+        "import" to "Import",
+        "library" to "Library",
+        "selectBook" to "Select a book to start listening",
+        "reader" to "Reader",
+        "readerTools" to "Reader tools",
+        "close" to "Close",
+        "prev" to "Prev",
+        "next" to "Next",
+        "start" to "Start",
+        "stop" to "Stop"
+    )
+    return when (language) {
+        "zh" -> zh[key]
+        "ja" -> ja[key]
+        else -> en[key]
+    } ?: en[key] ?: key
+}
+
 @Composable
 private fun RepeatPanel(
     state: AudioBookUiState,
@@ -873,10 +968,24 @@ private fun RepeatPanel(
 }
 
 @Composable
-private fun ReaderStylePanel(settings: ReaderSettings, onReaderSettingsChange: (ReaderSettings) -> Unit) {
+private fun ReaderStylePanel(
+    settings: ReaderSettings,
+    onReaderSettingsChange: (ReaderSettings) -> Unit,
+    onResetReaderSettings: () -> Unit
+) {
     Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Reader view", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Reader view",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = onResetReaderSettings) {
+                    Text("Reset")
+                }
+            }
             Text("Font ${String.format(Locale.US, "%.2f", settings.fontScale)}x")
             Slider(
                 value = settings.fontScale,
@@ -899,6 +1008,50 @@ private fun ReaderStylePanel(settings: ReaderSettings, onReaderSettingsChange: (
             TextButton(onClick = { onReaderSettingsChange(settings.copy(gesturesEnabled = !settings.gesturesEnabled)) }) {
                 Text(if (settings.gesturesEnabled) "Gestures on" else "Gestures off")
             }
+        }
+    }
+}
+
+@Composable
+private fun LanguagePanel(settings: ReaderSettings, onReaderSettingsChange: (ReaderSettings) -> Unit) {
+    Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Language", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("zh" to "中文", "ja" to "日本語", "en" to "English").forEach { (code, label) ->
+                    Button(
+                        onClick = { onReaderSettingsChange(settings.copy(language = code)) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (settings.language == code) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.secondary
+                            }
+                        )
+                    ) {
+                        Text(label)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StoragePanel(state: AudioBookUiState) {
+    Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Storage", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = state.dataRootPath.ifBlank { "Unavailable" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "Downloaded model files are under models/<model-name>/ in this project folder.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

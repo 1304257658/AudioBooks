@@ -23,6 +23,7 @@ data class ReaderSettings(
     val fontScale: Float = 1.0f,
     val lineSpacing: Float = 1.35f,
     val background: String = "system",
+    val language: String = "en",
     val gesturesEnabled: Boolean = true,
     val repeatCount: Int = 1,
     val abStart: Int? = null,
@@ -44,7 +45,8 @@ data class AudioBookUiState(
     val installedModelIds: Set<String> = emptySet(),
     val modelInstalled: Boolean = false,
     val modelDownloadUrl: String = "",
-    val modelDownloadProgress: Float? = null,
+    val dataRootPath: String = "",
+    val modelDownloadProgressById: Map<String, Float> = emptyMap(),
     val searchQuery: String = "",
     val searchResults: List<Int> = emptyList(),
     val readerSettings: ReaderSettings = ReaderSettings(),
@@ -222,6 +224,10 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
         _state.update { it.copy(readerSettings = settings) }
     }
 
+    fun resetReaderSettings() {
+        _state.update { it.copy(readerSettings = ReaderSettings(language = it.readerSettings.language)) }
+    }
+
     fun setRepeatCount(count: Int) {
         _state.update {
             it.copy(readerSettings = it.readerSettings.copy(repeatCount = count.coerceIn(1, 9)))
@@ -281,26 +287,35 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
         _state.update { it.copy(speechRate = rounded) }
     }
 
-    fun downloadModel() {
+    fun downloadModel(modelId: String) {
         viewModelScope.launch {
-            _state.update { it.copy(isBusy = true, modelDownloadProgress = 0f, message = null) }
+            _state.update {
+                it.copy(
+                    modelDownloadProgressById = it.modelDownloadProgressById + (modelId to 0f),
+                    message = null
+                )
+            }
             runCatching {
-                modelRepository.downloadAndInstall { progress ->
-                    _state.update { it.copy(modelDownloadProgress = progress) }
+                modelRepository.downloadAndInstall(modelId) { progress ->
+                    _state.update {
+                        it.copy(modelDownloadProgressById = it.modelDownloadProgressById + (modelId to progress))
+                    }
                 }
             }.onSuccess {
                 refreshModelState()
-                _state.update { it.copy(message = "Voice model installed.") }
+                _state.update { it.copy(message = "Voice model downloaded.") }
             }.onFailure { error ->
                 _state.update { it.copy(message = error.message ?: "Model download failed.") }
             }
-            _state.update { it.copy(isBusy = false, modelDownloadProgress = null) }
+            _state.update { state ->
+                state.copy(modelDownloadProgressById = state.modelDownloadProgressById - modelId)
+            }
         }
     }
 
-    fun deleteSelectedModel() {
+    fun deleteModel(modelId: String) {
         viewModelScope.launch {
-            modelRepository.deleteSelectedModel()
+            modelRepository.deleteModel(modelId)
             refreshModelState()
             _state.update { it.copy(message = "Model package deleted.") }
         }
@@ -345,6 +360,7 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
                 downloadedModelIds = model.downloadedIds,
                 installedModelIds = model.installedIds,
                 modelInstalled = model.installed,
+                dataRootPath = model.dataRoot.path,
                 modelDownloadUrl = model.downloadUrl
             )
         }
