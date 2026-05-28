@@ -50,6 +50,7 @@ dependencies {
     implementation(libs.coroutines.android)
     implementation(libs.commons.compress)
     implementation(libs.jsoup)
+    implementation(libs.pdfbox.android)
 
     debugImplementation(libs.compose.ui.tooling)
 }

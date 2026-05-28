@@ -82,8 +82,10 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
 
     private fun ensureEngine(): OfflineTts {
         tts?.let { return it }
-        val modelDir = File(LocalProjectPaths(appContext).models, ModelRepository.MODEL_DIR_NAME)
-        val requiredFiles = ModelRepository.REQUIRED_FILES
+        val modelState = ModelRepository(appContext).state()
+        val spec = modelState.selected
+        val modelDir = File(LocalProjectPaths(appContext).models, spec.directoryName)
+        val requiredFiles = spec.requiredFiles
         val missing = requiredFiles.filterNot { File(modelDir, it).isFile }
         if (missing.isNotEmpty()) {
             error(
@@ -92,18 +94,24 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
         }
         val config = getOfflineTtsConfig(
             modelDir = modelDir.absolutePath,
-            modelName = "model.onnx",
+            modelName = spec.modelName,
             acousticModelName = "",
             vocoder = "",
             voices = "",
-            lexicon = "lexicon.txt",
+            lexicon = spec.lexicon,
             dataDir = "",
             dictDir = "",
             ruleFsts = "",
-            ruleFars = File(modelDir, "rule.far").absolutePath,
+            ruleFars = spec.ruleFar?.let { File(modelDir, it).absolutePath }.orEmpty(),
             numThreads = 4
         )
         return OfflineTts(assetManager = null, config = config).also { tts = it }
+    }
+
+    fun clearEngine() {
+        stop()
+        tts?.release()
+        tts = null
     }
 
     private fun ensureTrack(sampleRate: Int) {

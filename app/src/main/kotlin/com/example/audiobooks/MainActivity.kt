@@ -24,12 +24,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
@@ -69,11 +72,12 @@ class MainActivity : ComponentActivity() {
                 val state by viewModel.state.collectAsStateWithLifecycle()
                 AudioBooksScreen(
                     state = state,
-                    onImport = viewModel::importEpub,
+                    onImport = viewModel::importBook,
                     onSelectBook = viewModel::selectBook,
                     onTogglePlayback = viewModel::togglePlayback,
                     onJump = viewModel::jumpBy,
                     onRateChange = viewModel::setSpeechRate,
+                    onSelectModel = viewModel::selectModel,
                     onDownloadModel = viewModel::downloadModel,
                     onMessageShown = viewModel::clearMessage
                 )
@@ -91,6 +95,7 @@ private fun AudioBooksScreen(
     onTogglePlayback: () -> Unit,
     onJump: (Int) -> Unit,
     onRateChange: (Float) -> Unit,
+    onSelectModel: (String) -> Unit,
     onDownloadModel: () -> Unit,
     onMessageShown: () -> Unit
 ) {
@@ -132,7 +137,13 @@ private fun AudioBooksScreen(
                             enabled = !state.isBusy,
                             onClick = {
                                 importLauncher.launch(
-                                    arrayOf("application/epub+zip", "application/octet-stream", "*/*")
+                                arrayOf(
+                                    "application/epub+zip",
+                                    "application/pdf",
+                                    "text/plain",
+                                    "application/octet-stream",
+                                    "*/*"
+                                )
                                 )
                             }
                         ) {
@@ -169,9 +180,10 @@ private fun AudioBooksScreen(
                 ReaderPane(
                     state = state,
                     onTogglePlayback = onTogglePlayback,
-                    onJump = onJump,
-                    onRateChange = onRateChange,
-                    onDownloadModel = onDownloadModel,
+                        onJump = onJump,
+                        onRateChange = onRateChange,
+                        onSelectModel = onSelectModel,
+                        onDownloadModel = onDownloadModel,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -269,6 +281,7 @@ private fun ReaderPane(
     onTogglePlayback: () -> Unit,
     onJump: (Int) -> Unit,
     onRateChange: (Float) -> Unit,
+    onSelectModel: (String) -> Unit,
     onDownloadModel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -283,6 +296,7 @@ private fun ReaderPane(
 
         ModelStatusPanel(
             state = state,
+            onSelectModel = onSelectModel,
             onDownloadModel = onDownloadModel
         )
         Spacer(Modifier.height(14.dp))
@@ -359,6 +373,7 @@ private fun ReaderPane(
 @Composable
 private fun ModelStatusPanel(
     state: AudioBookUiState,
+    onSelectModel: (String) -> Unit,
     onDownloadModel: () -> Unit
 ) {
     Surface(
@@ -367,14 +382,35 @@ private fun ModelStatusPanel(
         shape = RoundedCornerShape(8.dp)
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = if (state.modelInstalled) "Voice model ready" else "Voice model required",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold
-            )
+            Text("Voice model", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            state.models.forEach { model ->
+                val selected = model.id == state.selectedModelId
+                val installed = model.id in state.installedModelIds
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                            RoundedCornerShape(6.dp)
+                        )
+                        .clickable { onSelectModel(model.id) }
+                        .padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(model.name, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+                        Text(
+                            "${model.approximateSize} / ${if (installed) "installed" else "not installed"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (selected) Text("Selected", style = MaterialTheme.typography.labelMedium)
+                }
+            }
             if (!state.modelInstalled) {
                 Text(
-                    text = "Download the public Sherpa model before playback. Books and progress stay local.",
+                    text = "Download the selected public model before playback. Books and progress stay local.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -398,15 +434,28 @@ private fun ModelStatusPanel(
 
 @Composable
 private fun AudioBooksTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = MaterialTheme.colorScheme.copy(
+    val dark = isSystemInDarkTheme()
+    val colors = if (dark) {
+        darkColorScheme(
+            primary = Color(0xFF8ACBC3),
+            secondary = Color(0xFFD0BFA8),
+            background = Color(0xFF121412),
+            surface = Color(0xFF121412),
+            surfaceVariant = Color(0xFF242620),
+            secondaryContainer = Color(0xFF3A3329)
+        )
+    } else {
+        lightColorScheme(
             primary = Color(0xFF1F5E5A),
             secondary = Color(0xFF6E5B46),
             background = Color(0xFFFAFAF8),
             surface = Color(0xFFFAFAF8),
             surfaceVariant = Color(0xFFF0ECE4),
             secondaryContainer = Color(0xFFE4DED3)
-        ),
+        )
+    }
+    MaterialTheme(
+        colorScheme = colors,
         content = content
     )
 }

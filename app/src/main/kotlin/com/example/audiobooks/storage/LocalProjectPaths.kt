@@ -9,6 +9,7 @@ class LocalProjectPaths(context: Context) {
     val models: File = File(root, "models")
     val downloads: File = File(root, "downloads")
     val libraryIndex: File = File(root, "library.json")
+    val settings: File = File(root, "settings.json")
 
     fun ensure() {
         books.mkdirs()
@@ -16,4 +17,3 @@ class LocalProjectPaths(context: Context) {
         downloads.mkdirs()
     }
 }
-

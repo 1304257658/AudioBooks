@@ -8,15 +8,8 @@ import java.io.File
 import java.util.zip.ZipFile
 import javax.xml.parsers.DocumentBuilderFactory
 
-data class ParsedEpub(
-    val title: String,
-    val author: String?,
-    val chapters: List<BookChapter>,
-    val sentences: List<BookSentence>
-)
-
 class EpubParser {
-    fun parse(file: File): ParsedEpub {
+    fun parse(file: File): ParsedBook {
         ZipFile(file).use { zip ->
             val opfPath = findOpfPath(zip)
             val opf = parseXml(zip.readText(opfPath))
@@ -44,12 +37,8 @@ class EpubParser {
                     .substringBeforeLast(".")
                     .ifBlank { "Chapter ${chapterIndex + 1}" }
                 val start = sentences.size
-                splitSentences(text).forEach { sentenceText ->
-                    sentences += BookSentence(
-                        index = sentences.size,
-                        chapterIndex = chapterIndex,
-                        text = sentenceText
-                    )
+                splitReadableText(text, chapterIndex).forEach { sentence ->
+                    sentences += sentence.copy(index = sentences.size)
                 }
                 if (sentences.size > start) {
                     chapters += BookChapter(
@@ -62,7 +51,7 @@ class EpubParser {
             }
 
             require(sentences.isNotEmpty()) { "No readable text was found in this EPUB." }
-            return ParsedEpub(
+            return ParsedBook(
                 title = title,
                 author = author,
                 chapters = chapters,
@@ -77,26 +66,6 @@ class EpubParser {
         val rootFile = xml.elements("rootfile").firstOrNull()
         return rootFile?.getAttribute("full-path")?.takeIf(String::isNotBlank)
             ?: error("EPUB container does not point to an OPF file.")
-    }
-
-    private fun splitSentences(text: String): List<String> {
-        val normalized = text.replace(Regex("\\s+"), " ").trim()
-        if (normalized.isBlank()) return emptyList()
-
-        val result = mutableListOf<String>()
-        val current = StringBuilder()
-        normalized.forEach { char ->
-            current.append(char)
-            val shouldSplit = char in sentenceEndChars ||
-                (char in softBreakChars && current.length >= 45) ||
-                current.length >= 120
-            if (shouldSplit) {
-                current.toString().trim().takeIf { it.length >= 2 }?.let(result::add)
-                current.clear()
-            }
-        }
-        current.toString().trim().takeIf { it.length >= 2 }?.let(result::add)
-        return result
     }
 
     private fun ZipFile.readText(path: String): String {
@@ -133,14 +102,4 @@ class EpubParser {
                 }
             }
             .joinToString("/")
-
-    private companion object {
-        val sentenceEndChars = setOf(
-            '\u3002', '\uff01', '\uff1f', '\uff1b',
-            '.', '!', '?', ';', '\n'
-        )
-        val softBreakChars = setOf(
-            '\uff0c', '\u3001', ',', ':', '\uff1a'
-        )
-    }
 }

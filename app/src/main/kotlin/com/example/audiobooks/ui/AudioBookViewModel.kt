@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.audiobooks.model.AudioBook
 import com.example.audiobooks.storage.BookRepository
 import com.example.audiobooks.storage.ModelRepository
+import com.example.audiobooks.storage.TtsModelSpec
 import com.example.audiobooks.tts.PlaybackEvent
 import com.example.audiobooks.tts.SherpaTtsPlayer
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +22,9 @@ data class AudioBookUiState(
     val currentSentenceIndex: Int = 0,
     val isPlaying: Boolean = false,
     val speechRate: Float = 1.0f,
+    val models: List<TtsModelSpec> = emptyList(),
+    val selectedModelId: String = "",
+    val installedModelIds: Set<String> = emptySet(),
     val modelInstalled: Boolean = false,
     val modelDownloadUrl: String = "",
     val modelDownloadProgress: Float? = null,
@@ -59,10 +63,10 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun importEpub(uri: Uri) {
+    fun importBook(uri: Uri) {
         viewModelScope.launch {
             _state.update { it.copy(isBusy = true, message = null) }
-            runCatching { repository.importEpub(uri) }
+            runCatching { repository.importBook(uri) }
                 .onSuccess { book ->
                     refreshBooks(book.id)
                     _state.update { it.copy(message = "Imported: ${book.title}") }
@@ -133,6 +137,12 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun selectModel(modelId: String) {
+        player.clearEngine()
+        modelRepository.selectModel(modelId)
+        refreshModelState()
+    }
+
     fun clearMessage() {
         _state.update { it.copy(message = null) }
     }
@@ -160,6 +170,9 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
         val model = modelRepository.state()
         _state.update {
             it.copy(
+                models = model.models,
+                selectedModelId = model.selected.id,
+                installedModelIds = model.installedIds,
                 modelInstalled = model.installed,
                 modelDownloadUrl = model.downloadUrl
             )

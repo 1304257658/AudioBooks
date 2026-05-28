@@ -6,6 +6,8 @@ import com.example.audiobooks.model.AudioBook
 import com.example.audiobooks.model.BookChapter
 import com.example.audiobooks.model.BookSentence
 import com.example.audiobooks.parser.EpubParser
+import com.example.audiobooks.parser.PdfTextParser
+import com.example.audiobooks.parser.TextParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -13,7 +15,9 @@ import org.json.JSONObject
 import java.io.File
 
 class BookRepository(private val context: Context) {
-    private val parser = EpubParser()
+    private val epubParser = EpubParser()
+    private val textParser = TextParser()
+    private val pdfParser = PdfTextParser(context)
     private val paths = LocalProjectPaths(context)
     private val booksDir = paths.books
     private val indexFile = paths.libraryIndex
@@ -23,21 +27,30 @@ class BookRepository(private val context: Context) {
         readIndex().mapNotNull { id -> loadBook(id) }
     }
 
-    suspend fun importEpub(uri: Uri): AudioBook = withContext(Dispatchers.IO) {
+    suspend fun importBook(uri: Uri): AudioBook = withContext(Dispatchers.IO) {
         paths.ensure()
         val id = System.currentTimeMillis().toString()
         val targetDir = File(booksDir, id).apply { mkdirs() }
-        val originalName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            if (cursor.moveToFirst() && nameIndex >= 0) cursor.getString(nameIndex) else null
-        } ?: "imported.epub"
-        val epubFile = File(targetDir, "book.epub")
+        val originalName = displayName(uri)
+        val extension = originalName.substringAfterLast(".", missingDelimiterValue = "").lowercase()
+        val storedName = when (extension) {
+            "epub" -> "book.epub"
+            "txt" -> "book.txt"
+            "pdf" -> "book.pdf"
+            else -> error("Unsupported file type: .$extension")
+        }
+        val sourceFile = File(targetDir, storedName)
         context.contentResolver.openInputStream(uri).use { input ->
-            requireNotNull(input) { "Cannot open the selected EPUB file." }
-            epubFile.outputStream().use { output -> input.copyTo(output) }
+            requireNotNull(input) { "Cannot open the selected file." }
+            sourceFile.outputStream().use { output -> input.copyTo(output) }
         }
 
-        val parsed = parser.parse(epubFile)
+        val parsed = when (extension) {
+            "epub" -> epubParser.parse(sourceFile)
+            "txt" -> textParser.parse(sourceFile)
+            "pdf" -> pdfParser.parse(sourceFile)
+            else -> error("Unsupported file type: .$extension")
+        }
         val book = AudioBook(
             id = id,
             title = parsed.title,
@@ -51,6 +64,12 @@ class BookRepository(private val context: Context) {
         writeIndex((readIndex() + id).distinct())
         book
     }
+
+    private fun displayName(uri: Uri): String =
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (cursor.moveToFirst() && nameIndex >= 0) cursor.getString(nameIndex) else null
+        } ?: "imported.epub"
 
     suspend fun saveProgress(bookId: String, sentenceIndex: Int) = withContext(Dispatchers.IO) {
         loadBook(bookId)?.let { saveBook(it.copy(currentSentenceIndex = sentenceIndex.coerceAtLeast(0))) }
