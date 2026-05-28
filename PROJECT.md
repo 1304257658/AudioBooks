@@ -70,7 +70,7 @@ This document is the durable project log for architecture decisions, implemented
 
 ## Current Gaps
 
-- Real CosyVoice2/Fun-CosyVoice3/Fish runtime integration is pending.
+- Real CosyVoice2/Fun-CosyVoice3/Fish runtime integration is pending. Downloaded packages are stored locally, but playback must remain disabled until ONNX Runtime Mobile plus the model-specific preprocessing/post-processing chain is implemented.
 - Reader settings are partially localized; not every small UI string is in the language map yet.
 - EPUB chapter extraction is heuristic from headings/title and may need NCX/nav support.
 - PDF chapter navigation is page-based, not document-outline based.

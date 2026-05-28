@@ -479,6 +479,14 @@ private fun ReaderPane(
                 Text(uiText(lang, "next"))
             }
         }
+        if (!state.modelInstalled) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Downloaded model packages are not playable until the ONNX runtime is integrated.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
         if (showReaderTools && book != null) {
             Surface(
