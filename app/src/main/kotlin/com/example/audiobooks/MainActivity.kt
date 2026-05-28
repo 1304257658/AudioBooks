@@ -452,40 +452,42 @@ private fun ReaderPane(
                 )
             }
         }
-        Spacer(Modifier.height(16.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(
-                onClick = { onJump(-1) },
-                enabled = state.currentSentenceIndex > 0,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-            ) {
-                Text(uiText(lang, "prev"))
+        if (!showReaderTools) {
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(
+                    onClick = { onJump(-1) },
+                    enabled = state.currentSentenceIndex > 0,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                ) {
+                    Text(uiText(lang, "prev"))
+                }
+                Button(
+                    onClick = onTogglePlayback,
+                    modifier = Modifier.weight(1f),
+                    enabled = state.modelInstalled,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (state.isPlaying) Color(0xFF9B3A35) else MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Text(if (state.isPlaying) uiText(lang, "stop") else uiText(lang, "start"))
+                }
+                Button(
+                    onClick = { onJump(1) },
+                    enabled = state.currentSentenceIndex < book.sentences.lastIndex,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                ) {
+                    Text(uiText(lang, "next"))
+                }
             }
-            Button(
-                onClick = onTogglePlayback,
-                modifier = Modifier.weight(1f),
-                enabled = state.modelInstalled,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (state.isPlaying) Color(0xFF9B3A35) else MaterialTheme.colorScheme.primary
+            if (!state.modelInstalled) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Downloaded model packages are not playable until the ONNX runtime is integrated.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            ) {
-                Text(if (state.isPlaying) uiText(lang, "stop") else uiText(lang, "start"))
             }
-            Button(
-                onClick = { onJump(1) },
-                enabled = state.currentSentenceIndex < book.sentences.lastIndex,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-            ) {
-                Text(uiText(lang, "next"))
-            }
-        }
-        if (!state.modelInstalled) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "Downloaded model packages are not playable until the ONNX runtime is integrated.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
         if (showReaderTools && book != null) {
@@ -865,17 +867,26 @@ private fun SleepTimerPanel(state: AudioBookUiState, onStartSleepTimer: (Int?) -
             Text("Sleep timer", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(state.readerSettings.sleepTimerLabel?.let { "Active: $it" } ?: "Off")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(15, 30, 45, 60).forEach { minutes ->
-                    Button(onClick = { onStartSleepTimer(minutes) }) {
+                listOf(15, 30).forEach { minutes ->
+                    Button(onClick = { onStartSleepTimer(minutes) }, modifier = Modifier.weight(1f)) {
                         Text("${minutes}m")
                     }
                 }
             }
-            Button(onClick = { onStartSleepTimer(-1) }) {
-                Text("Chapter end")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(45, 60).forEach { minutes ->
+                    Button(onClick = { onStartSleepTimer(minutes) }, modifier = Modifier.weight(1f)) {
+                        Text("${minutes}m")
+                    }
+                }
             }
-            TextButton(onClick = { onStartSleepTimer(null) }) {
-                Text("Cancel timer")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onStartSleepTimer(-1) }, modifier = Modifier.weight(1f)) {
+                    Text("Chapter end")
+                }
+                TextButton(onClick = { onStartSleepTimer(null) }, modifier = Modifier.weight(1f)) {
+                    Text("Cancel timer")
+                }
             }
         }
     }
@@ -1020,6 +1031,7 @@ private fun LanguagePanel(settings: ReaderSettings, onReaderSettingsChange: (Rea
                 listOf("zh" to "中文", "ja" to "日本語", "en" to "English").forEach { (code, label) ->
                     Button(
                         onClick = { onReaderSettingsChange(settings.copy(language = code)) },
+                        modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (settings.language == code) {
                                 MaterialTheme.colorScheme.primary

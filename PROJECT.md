@@ -58,6 +58,14 @@ This document is the durable project log for architecture decisions, implemented
   - resource size labels
 - APK output includes version in filename.
 
+## Recent Changes (v0.2.7 prep)
+
+- Added `x86_64` to `abiFilters` so debug APKs run on standard Android emulators.
+- Fixed Sleep Timer button row overflow on narrow screens (split into 2×2 grid with weight).
+- Fixed Language selector button row overflow (added weight to each button).
+- Fixed Reader tools panel obscuring playback controls (hide controls when tools panel is open).
+- Added `android:windowSoftInputMode="adjustResize"` to prevent keyboard from hiding search input.
+
 ## Known Traps
 
 - Downloaded model files are not the same as a working runtime. CosyVoice/Fish need ONNX Runtime Mobile plus tokenizer, acoustic/vocoder wiring, and post-processing.
