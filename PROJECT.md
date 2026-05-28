@@ -29,6 +29,7 @@ This document is the durable project log for architecture decisions, implemented
   - Model packages can be downloaded from ModelScope by file whitelist.
   - Runtime integration for those target models is not complete yet.
   - System Android TTS fallback is intentionally not used.
+  - Sherpa/native playback runtime must be created lazily on first playback, not during app startup. Eager native initialization can crash the app before the first screen renders.
 
 ## Implemented Features
 
@@ -61,6 +62,7 @@ This document is the durable project log for architecture decisions, implemented
 
 - Downloaded model files are not the same as a working runtime. CosyVoice/Fish need ONNX Runtime Mobile plus tokenizer, acoustic/vocoder wiring, and post-processing.
 - Do not reintroduce Android system TTS as a quality fallback. It hides runtime gaps and makes test results misleading.
+- Do not initialize TTS native engines in `AudioBookViewModel` construction. Keep startup independent from model runtime availability.
 - ModelScope repositories may contain multiple variants. Download only files listed in `TtsModelSpec.downloadFiles`; do not download the whole repository.
 - Previously imported books keep old parsed metadata. Parser fixes usually require deleting and re-importing the book.
 - Android file managers often restrict `Android/data`. Use USB or a capable file manager to inspect app-specific external files.
