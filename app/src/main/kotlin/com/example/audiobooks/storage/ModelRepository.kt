@@ -24,7 +24,7 @@ data class TtsModelSpec(
     val directoryName: String,
     val archiveName: String,
     val downloadUrl: String,
-    val huggingFaceRepoId: String,
+    val modelScopeRepoId: String,
     val modelName: String = "model.onnx",
     val lexicon: String = "lexicon.txt",
     val ruleFar: String? = null,
@@ -81,14 +81,14 @@ class ModelRepository(context: Context) {
         paths.ensure()
         val spec = selectedModel()
         showProgressNotification(spec.name, 0)
-        downloadHuggingFaceSnapshot(spec) { progress ->
+        downloadModelScopeSnapshot(spec) { progress ->
             val percent = (progress * 100).toInt().coerceIn(0, 100)
             onProgress(progress)
             showProgressNotification(spec.name, percent)
         }
         File(modelDir(spec), DOWNLOAD_MARKER).writeText(
             JSONObject()
-                .put("repo", spec.huggingFaceRepoId)
+                .put("repo", spec.modelScopeRepoId)
                 .put("downloadedAt", System.currentTimeMillis())
                 .toString(),
             Charsets.UTF_8
@@ -96,12 +96,12 @@ class ModelRepository(context: Context) {
         showDoneNotification(spec.name)
     }
 
-    private fun downloadHuggingFaceSnapshot(spec: TtsModelSpec, onProgress: (Float) -> Unit) {
+    private fun downloadModelScopeSnapshot(spec: TtsModelSpec, onProgress: (Float) -> Unit) {
         val targetDir = modelDir(spec)
         val tmpDir = File(paths.models, "${spec.directoryName}.tmp")
         if (tmpDir.exists()) tmpDir.deleteRecursively()
         tmpDir.mkdirs()
-        val files = huggingFaceFiles(spec.huggingFaceRepoId)
+        val files = modelScopeFiles(spec.modelScopeRepoId)
             .filterNot { it.endsWith("/") }
             .filterNot { it == ".gitattributes" || it.equals("README.md", ignoreCase = true) }
         require(files.isNotEmpty()) { "No downloadable model files were found." }
@@ -114,7 +114,7 @@ class ModelRepository(context: Context) {
             target.parentFile?.mkdirs()
             val baseProgress = index.toFloat() / files.size
             val fileShare = 1f / files.size
-            download(huggingFaceResolveUrl(spec.huggingFaceRepoId, relativePath), target) { fileProgress ->
+            download(modelScopeDownloadUrl(spec.modelScopeRepoId, relativePath), target) { fileProgress ->
                 onProgress((baseProgress + fileShare * fileProgress).coerceIn(0f, 1f))
             }
         }
@@ -124,25 +124,23 @@ class ModelRepository(context: Context) {
         onProgress(1f)
     }
 
-    private fun huggingFaceFiles(repoId: String): List<String> {
-        val apiUrl = "https://huggingface.co/api/models/$repoId"
+    private fun modelScopeFiles(repoId: String): List<String> {
+        val apiUrl = "https://www.modelscope.cn/api/v1/models/$repoId/repo/files?Revision=master"
         val connection = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 60_000
             instanceFollowRedirects = true
         }
         val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-        val siblings = JSONObject(body).optJSONArray("siblings") ?: JSONArray()
-        return (0 until siblings.length()).mapNotNull { i ->
-            siblings.optJSONObject(i)?.optString("rfilename")?.takeIf(String::isNotBlank)
+        val files = JSONObject(body).optJSONObject("Data")?.optJSONArray("Files") ?: JSONArray()
+        return (0 until files.length()).mapNotNull { i ->
+            files.optJSONObject(i)?.optString("Path")?.takeIf(String::isNotBlank)
         }
     }
 
-    private fun huggingFaceResolveUrl(repoId: String, relativePath: String): String {
-        val encodedPath = relativePath.split("/").joinToString("/") { part ->
-            URLEncoder.encode(part, Charsets.UTF_8.name()).replace("+", "%20")
-        }
-        return "https://huggingface.co/$repoId/resolve/main/$encodedPath"
+    private fun modelScopeDownloadUrl(repoId: String, relativePath: String): String {
+        val encodedPath = URLEncoder.encode(relativePath, Charsets.UTF_8.name()).replace("+", "%20")
+        return "https://www.modelscope.cn/api/v1/models/$repoId/repo?Revision=master&FilePath=$encodedPath"
     }
 
     private fun download(url: String, target: File, onProgress: (Float) -> Unit) {
@@ -261,8 +259,8 @@ class ModelRepository(context: Context) {
                 availableInApp = false,
                 directoryName = "CosyVoice2-0.5B_ONNX",
                 archiveName = "CosyVoice2-0.5B_ONNX.zip",
-                downloadUrl = "https://huggingface.co/Lourdle/CosyVoice2-0.5B_ONNX",
-                huggingFaceRepoId = "Lourdle/CosyVoice2-0.5B_ONNX",
+                downloadUrl = "https://www.modelscope.cn/models/Lourdle/CosyVoice2-0.5B_ONNX",
+                modelScopeRepoId = "Lourdle/CosyVoice2-0.5B_ONNX",
                 approximateSize = "ModelScope"
             ),
             TtsModelSpec(
@@ -273,9 +271,9 @@ class ModelRepository(context: Context) {
                 availableInApp = false,
                 directoryName = "Fun-CosyVoice3-0.5B-ONNX",
                 archiveName = "cosy-voice3-onnx.zip",
-                downloadUrl = "https://huggingface.co/ayousanz/cosy-voice3-onnx",
-                huggingFaceRepoId = "ayousanz/cosy-voice3-onnx",
-                approximateSize = "HuggingFace"
+                downloadUrl = "https://www.modelscope.cn/models/FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+                modelScopeRepoId = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+                approximateSize = "ModelScope"
             ),
             TtsModelSpec(
                 id = "fish-speech-1.5",
@@ -285,8 +283,8 @@ class ModelRepository(context: Context) {
                 availableInApp = false,
                 directoryName = "fish-speech-1.5",
                 archiveName = "fish-speech-1.5.zip",
-                downloadUrl = "https://huggingface.co/fishaudio/fish-speech-1.5",
-                huggingFaceRepoId = "fishaudio/fish-speech-1.5",
+                downloadUrl = "https://www.modelscope.cn/models/fishaudio/fish-speech-1.5",
+                modelScopeRepoId = "fishaudio/fish-speech-1.5",
                 approximateSize = "Conversion required"
             )
         )
