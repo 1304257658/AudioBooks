@@ -14,23 +14,38 @@ class PdfTextParser(context: Context) {
 
     fun parse(file: File): ParsedBook {
         PDDocument.load(file).use { document ->
-            val text = PDFTextStripper().getText(document)
-            val sentences = splitReadableText(text)
-            require(sentences.isNotEmpty()) { "No readable text was found in this PDF. Scanned PDFs need OCR." }
-            return ParsedBook(
-                title = file.nameWithoutExtension,
-                author = null,
-                chapters = listOf(
-                    BookChapter(
-                        index = 0,
-                        title = "PDF",
-                        startSentenceIndex = 0,
-                        endSentenceIndex = sentences.lastIndex
+            val chapters = mutableListOf<BookChapter>()
+            val allSentences = mutableListOf<com.example.audiobooks.model.BookSentence>()
+            for (page in 1..document.numberOfPages) {
+                val text = PDFTextStripper().apply {
+                    startPage = page
+                    endPage = page
+                }.getText(document)
+                val start = allSentences.size
+                splitReadableText(text, page - 1).forEach { sentence ->
+                    allSentences += sentence.copy(index = allSentences.size)
+                }
+                if (allSentences.size > start) {
+                    chapters += BookChapter(
+                        index = chapters.size,
+                        title = "Page $page",
+                        startSentenceIndex = start,
+                        endSentenceIndex = allSentences.lastIndex
                     )
-                ),
+                }
+            }
+            val sentences = allSentences
+            require(sentences.isNotEmpty()) { "No readable text was found in this PDF. Scanned PDFs need OCR." }
+            val title = document.documentInformation?.title
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: file.nameWithoutExtension
+            return ParsedBook(
+                title = title,
+                author = document.documentInformation?.author?.trim()?.takeIf { it.isNotBlank() },
+                chapters = chapters,
                 sentences = sentences
             )
         }
     }
 }
-

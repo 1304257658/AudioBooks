@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AndroidTtsPlayer(context: Context) : TextToSpeech.OnInitListener, TtsPlayer {
     private val appContext = context.applicationContext
     private val ready = AtomicBoolean(false)
+    private val stopped = AtomicBoolean(true)
     private var tts: TextToSpeech? = TextToSpeech(appContext, this)
     private var queue: List<BookSentence> = emptyList()
     private var rate = 1.0f
@@ -34,18 +35,18 @@ class AndroidTtsPlayer(context: Context) : TextToSpeech.OnInitListener, TtsPlaye
                 override fun onDone(utteranceId: String) {
                     val index = utteranceId.toIntOrNull() ?: return
                     _events.tryEmit(PlaybackEvent.SentenceDone(index))
-                    speakNext(index + 1)
+                    if (!stopped.get()) speakNext(index + 1)
                 }
 
                 @Deprecated("Deprecated in Android TTS API")
                 override fun onError(utteranceId: String) {
                     _events.tryEmit(PlaybackEvent.Error("TTS playback failed: $utteranceId"))
-                    utteranceId.toIntOrNull()?.let { speakNext(it + 1) }
+                    if (!stopped.get()) utteranceId.toIntOrNull()?.let { speakNext(it + 1) }
                 }
 
                 override fun onError(utteranceId: String, errorCode: Int) {
                     _events.tryEmit(PlaybackEvent.Error("TTS playback failed: $utteranceId ($errorCode)"))
-                    utteranceId.toIntOrNull()?.let { speakNext(it + 1) }
+                    if (!stopped.get()) utteranceId.toIntOrNull()?.let { speakNext(it + 1) }
                 }
             })
         } else {
@@ -56,11 +57,13 @@ class AndroidTtsPlayer(context: Context) : TextToSpeech.OnInitListener, TtsPlaye
     override fun play(sentences: List<BookSentence>, startIndex: Int, speechRate: Float) {
         queue = sentences
         rate = speechRate
+        stopped.set(false)
         tts?.setSpeechRate(rate)
         speakNext(startIndex.coerceIn(0, sentences.lastIndex.coerceAtLeast(0)))
     }
 
     override fun stop() {
+        stopped.set(true)
         tts?.stop()
     }
 
@@ -77,6 +80,7 @@ class AndroidTtsPlayer(context: Context) : TextToSpeech.OnInitListener, TtsPlaye
 
     private fun speakNext(index: Int) {
         if (!ready.get()) return
+        if (stopped.get()) return
         if (index !in queue.indices) return
         val params = Bundle().apply {
             putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
@@ -84,4 +88,3 @@ class AndroidTtsPlayer(context: Context) : TextToSpeech.OnInitListener, TtsPlaye
         tts?.speak(queue[index].text, TextToSpeech.QUEUE_FLUSH, params, index.toString())
     }
 }
-

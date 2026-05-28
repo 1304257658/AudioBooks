@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -153,7 +154,7 @@ private fun AudioBooksScreen(
     BackHandler(enabled = currentScreen != AppScreen.Library) {
         currentScreen = if (currentScreen == AppScreen.Chapters) AppScreen.Reader else AppScreen.Library
     }
-    FullScreenEffect(enabled = currentScreen == AppScreen.Reader)
+    FullScreenEffect(enabled = false)
 
     LaunchedEffect(state.message) {
         val message = state.message ?: return@LaunchedEffect
@@ -475,6 +476,7 @@ private fun ReaderPane(
                     onTogglePlayback = onTogglePlayback,
                     onJump = onJump,
                     onAddAnnotation = onAddAnnotation,
+                    onDeleteAnnotation = onDeleteAnnotation,
                     modifier = Modifier.padding(16.dp)
                 )
             }
@@ -491,7 +493,7 @@ private fun ReaderPane(
             Button(
                 onClick = onTogglePlayback,
                 modifier = Modifier.weight(1f),
-                enabled = state.modelInstalled,
+                enabled = true,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (state.isPlaying) Color(0xFF9B3A35) else MaterialTheme.colorScheme.primary
                 )
@@ -512,7 +514,8 @@ private fun ReaderPane(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .padding(12.dp),
+                    .padding(12.dp)
+                    .heightIn(max = 520.dp),
                 color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(8.dp),
                 shadowElevation = 8.dp
@@ -535,7 +538,16 @@ private fun ReaderPane(
                             }
                         }
                     }
-                    item { SearchPanel(state, onSearchChange, onJumpTo) }
+                    item {
+                        SearchPanel(
+                            state = state,
+                            onSearchChange = onSearchChange,
+                            onJumpTo = { index ->
+                                onJumpTo(index)
+                                showReaderTools = false
+                            }
+                        )
+                    }
                     item { SpeedPanel(state = state, onRateChange = onRateChange) }
                     item { AnnotationPanel(state, onJumpTo, onDeleteAnnotation, onExportAnnotations) }
                     item { SleepTimerPanel(state, onStartSleepTimer) }
@@ -723,6 +735,7 @@ private fun ModelStatusPanel(
 private fun TextReader(
     state: AudioBookUiState,
     onAddAnnotation: (Int, String, String) -> Unit,
+    onDeleteAnnotation: (String) -> Unit,
     onTogglePlayback: () -> Unit,
     onJump: (Int) -> Unit,
     modifier: Modifier = Modifier
@@ -741,7 +754,8 @@ private fun TextReader(
         items(book.sentences, key = { it.index }) { sentence ->
             val index = sentence.index
             val active = index == state.currentSentenceIndex
-            val annotated = book.annotations.any { it.sentenceIndex == index }
+            val annotation = book.annotations.firstOrNull { it.sentenceIndex == index }
+            val annotated = annotation != null
             Text(
                 text = sentence.text,
                 style = (if (active) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge).let {
@@ -761,7 +775,13 @@ private fun TextReader(
                     .combinedClickable(
                         onClick = { if (state.readerSettings.gesturesEnabled) onTogglePlayback() },
                         onDoubleClick = { if (state.readerSettings.gesturesEnabled) onJump(1) },
-                        onLongClick = { onAddAnnotation(index, "yellow", "") }
+                        onLongClick = {
+                            if (annotation != null) {
+                                onDeleteAnnotation(annotation.id)
+                            } else {
+                                onAddAnnotation(index, "yellow", "")
+                            }
+                        }
                     )
                     .padding(4.dp)
             )

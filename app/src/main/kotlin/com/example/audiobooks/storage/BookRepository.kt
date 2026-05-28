@@ -48,12 +48,17 @@ class BookRepository(private val context: Context) {
             sourceFile.outputStream().use { output -> input.copyTo(output) }
         }
 
-        val parsed = when (extension) {
+        val parsedRaw = when (extension) {
             "epub" -> epubParser.parse(sourceFile, targetDir)
             "txt" -> textParser.parse(sourceFile)
             "pdf" -> pdfParser.parse(sourceFile)
             else -> error("Unsupported file type: .$extension")
         }
+        val parsed = parsedRaw.copy(
+            title = parsedRaw.title
+                .takeUnless { it.equals(storedName.substringBeforeLast("."), ignoreCase = true) }
+                ?: originalName.substringBeforeLast(".").ifBlank { originalName }
+        )
         val book = AudioBook(
             id = id,
             title = parsed.title,

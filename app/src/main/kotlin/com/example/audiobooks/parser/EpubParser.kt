@@ -50,7 +50,12 @@ class EpubParser {
                     htmlChapters += "<section class=\"chapter\">${doc.body().html()}</section>"
                 }
                 val text = doc.text()
-                val chapterTitle = href.substringAfterLast("/")
+                val chapterTitle = doc.select("h1, h2, h3, title")
+                    .firstOrNull()
+                    ?.text()
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: href.substringAfterLast("/")
                     .substringBeforeLast(".")
                     .ifBlank { "Chapter ${chapterIndex + 1}" }
                 val start = sentences.size
