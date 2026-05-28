@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 data class AudioBookUiState(
     val books: List<AudioBook> = emptyList(),
@@ -93,6 +94,11 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
     fun togglePlayback() {
         val snapshot = _state.value
         val book = snapshot.selectedBook ?: return
+        val selectedModel = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
+        if (selectedModel?.availableInApp == false) {
+            _state.update { it.copy(message = "${selectedModel.name} runtime is not integrated yet.") }
+            return
+        }
         if (!snapshot.modelInstalled) {
             _state.update { it.copy(message = "Voice model is not installed. Download it first.") }
             return
@@ -116,8 +122,9 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun setSpeechRate(rate: Float) {
-        player.setRate(rate)
-        _state.update { it.copy(speechRate = rate.coerceIn(0.5f, 3.0f)) }
+        val rounded = ((rate.coerceIn(0.5f, 3.0f) * 100).roundToInt() / 100f).coerceIn(0.5f, 3.0f)
+        player.setRate(rounded)
+        _state.update { it.copy(speechRate = rounded) }
     }
 
     fun downloadModel() {

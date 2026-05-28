@@ -1,14 +1,17 @@
 package com.example.audiobooks
 
+import android.Manifest
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
-import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,15 +27,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
@@ -42,6 +42,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -59,9 +61,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.audiobooks.model.AudioBook
 import com.example.audiobooks.ui.AudioBookUiState
 import com.example.audiobooks.ui.AudioBookViewModel
+import java.util.Locale
 import kotlin.math.roundToInt
 
-private enum class AppScreen { Library, Reader }
+private enum class AppScreen { Library, Reader, Settings }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -104,7 +107,11 @@ private fun AudioBooksScreen(
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) onImport(uri)
     }
-    BackHandler(enabled = currentScreen == AppScreen.Reader) {
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {}
+
+    BackHandler(enabled = currentScreen != AppScreen.Library) {
         currentScreen = AppScreen.Library
     }
 
@@ -119,35 +126,44 @@ private fun AudioBooksScreen(
             TopAppBar(
                 title = {
                     Text(
-                        if (currentScreen == AppScreen.Reader) state.selectedBook?.title ?: "Listen" else "AudioBooks",
+                        when (currentScreen) {
+                            AppScreen.Reader -> state.selectedBook?.title ?: "Reader"
+                            AppScreen.Settings -> "Settings"
+                            AppScreen.Library -> "AudioBooks"
+                        },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 },
                 navigationIcon = {
-                    if (currentScreen == AppScreen.Reader) {
+                    if (currentScreen != AppScreen.Library) {
                         TextButton(onClick = { currentScreen = AppScreen.Library }) {
                             Text("Back")
                         }
                     }
                 },
                 actions = {
+                    if (currentScreen != AppScreen.Settings) {
+                        TextButton(onClick = { currentScreen = AppScreen.Settings }) {
+                            Text("Settings")
+                        }
+                    }
                     if (currentScreen == AppScreen.Library) {
                         TextButton(
                             enabled = !state.isBusy,
                             onClick = {
                                 importLauncher.launch(
-                                arrayOf(
-                                    "application/epub+zip",
-                                    "application/pdf",
-                                    "text/plain",
-                                    "application/octet-stream",
-                                    "*/*"
-                                )
+                                    arrayOf(
+                                        "application/epub+zip",
+                                        "application/pdf",
+                                        "text/plain",
+                                        "application/octet-stream",
+                                        "*/*"
+                                    )
                                 )
                             }
                         ) {
-                            Text("Import EPUB")
+                            Text("Import")
                         }
                     }
                 },
@@ -165,8 +181,8 @@ private fun AudioBooksScreen(
                 .padding(padding)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            if (currentScreen == AppScreen.Library) {
-                LibraryPane(
+            when (currentScreen) {
+                AppScreen.Library -> LibraryPane(
                     books = state.books,
                     selectedId = state.selectedBook?.id,
                     isBusy = state.isBusy,
@@ -176,14 +192,22 @@ private fun AudioBooksScreen(
                     },
                     modifier = Modifier.fillMaxSize()
                 )
-            } else {
-                ReaderPane(
+                AppScreen.Reader -> ReaderPane(
                     state = state,
                     onTogglePlayback = onTogglePlayback,
-                        onJump = onJump,
-                        onRateChange = onRateChange,
-                        onSelectModel = onSelectModel,
-                        onDownloadModel = onDownloadModel,
+                    onJump = onJump,
+                    modifier = Modifier.fillMaxSize()
+                )
+                AppScreen.Settings -> SettingsPane(
+                    state = state,
+                    onRateChange = onRateChange,
+                    onSelectModel = onSelectModel,
+                    onDownloadModel = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                        onDownloadModel()
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -241,7 +265,7 @@ private fun EmptyLibrary() {
     ) {
         Text("No books yet", style = MaterialTheme.typography.titleMedium)
         Text(
-            text = "Use Import EPUB to add a book. More formats will be added after the EPUB flow is stable.",
+            text = "Import EPUB, TXT, or text PDF files. Books and reading history stay local.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -251,6 +275,12 @@ private fun EmptyLibrary() {
 @Composable
 private fun BookRow(book: AudioBook, selected: Boolean, onClick: () -> Unit) {
     val background = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
+    val progress = if (book.totalSentences == 0) {
+        0
+    } else {
+        ((book.currentSentenceIndex + 1).toFloat() / book.totalSentences * 100).roundToInt()
+    }.coerceIn(0, 100)
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -266,7 +296,8 @@ private fun BookRow(book: AudioBook, selected: Boolean, onClick: () -> Unit) {
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            text = listOfNotNull(book.author, "${book.totalSentences} sentences").joinToString(" / "),
+            text = listOfNotNull(book.author, "${book.totalSentences} sentences", "Progress $progress%")
+                .joinToString(" / "),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
@@ -280,9 +311,6 @@ private fun ReaderPane(
     state: AudioBookUiState,
     onTogglePlayback: () -> Unit,
     onJump: (Int) -> Unit,
-    onRateChange: (Float) -> Unit,
-    onSelectModel: (String) -> Unit,
-    onDownloadModel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val book = state.selectedBook
@@ -293,13 +321,6 @@ private fun ReaderPane(
             }
             return
         }
-
-        ModelStatusPanel(
-            state = state,
-            onSelectModel = onSelectModel,
-            onDownloadModel = onDownloadModel
-        )
-        Spacer(Modifier.height(14.dp))
 
         Text(
             text = "${state.currentSentenceIndex + 1} / ${book.totalSentences}",
@@ -334,7 +355,6 @@ private fun ReaderPane(
             }
         }
         Spacer(Modifier.height(16.dp))
-
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
                 onClick = { onJump(-1) },
@@ -346,9 +366,12 @@ private fun ReaderPane(
             Button(
                 onClick = onTogglePlayback,
                 modifier = Modifier.weight(1f),
-                enabled = state.modelInstalled && state.modelDownloadProgress == null
+                enabled = state.modelInstalled && state.modelDownloadProgress == null,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (state.isPlaying) Color(0xFF9B3A35) else MaterialTheme.colorScheme.primary
+                )
             ) {
-                Text(if (state.isPlaying) "Pause" else "Play")
+                Text(if (state.isPlaying) "Stop" else "Start")
             }
             Button(
                 onClick = { onJump(1) },
@@ -358,15 +381,47 @@ private fun ReaderPane(
                 Text("Next")
             }
         }
+    }
+}
 
-        Spacer(Modifier.height(16.dp))
-        Text("Speed ${(state.speechRate * 10).roundToInt() / 10.0}x")
-        Slider(
-            value = state.speechRate,
-            onValueChange = onRateChange,
-            valueRange = 0.5f..3.0f,
-            steps = 4
-        )
+@Composable
+private fun SettingsPane(
+    state: AudioBookUiState,
+    onRateChange: (Float) -> Unit,
+    onSelectModel: (String) -> Unit,
+    onDownloadModel: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    LazyColumn(
+        modifier = modifier.padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(bottom = 32.dp)
+    ) {
+        item {
+            ModelStatusPanel(
+                state = state,
+                onSelectModel = onSelectModel,
+                onDownloadModel = onDownloadModel
+            )
+        }
+        item {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Playback", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text("Speed ${String.format(Locale.US, "%.2f", state.speechRate)}x")
+                    Slider(
+                        value = state.speechRate,
+                        onValueChange = onRateChange,
+                        valueRange = 0.5f..3.0f,
+                        steps = 249
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -376,12 +431,13 @@ private fun ModelStatusPanel(
     onSelectModel: (String) -> Unit,
     onDownloadModel: () -> Unit
 ) {
+    val selectedModel = state.models.firstOrNull { it.id == state.selectedModelId }
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = if (state.modelInstalled) Color(0xFFE6F2EC) else Color(0xFFFFF4DD),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         shape = RoundedCornerShape(8.dp)
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Voice model", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             state.models.forEach { model ->
                 val selected = model.id == state.selectedModelId
@@ -400,32 +456,49 @@ private fun ModelStatusPanel(
                     Column(Modifier.weight(1f)) {
                         Text(model.name, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
                         Text(
-                            "${model.approximateSize} / ${if (installed) "installed" else "not installed"}",
+                            "${model.runtime} / ${if (installed) "installed" else "not installed"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            model.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                     if (selected) Text("Selected", style = MaterialTheme.typography.labelMedium)
                 }
             }
-            if (!state.modelInstalled) {
-                Text(
-                    text = "Download the selected public model before playback. Books and progress stay local.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (state.modelDownloadProgress != null) {
+
+            when {
+                state.modelDownloadProgress != null -> {
+                    Text("Downloading ${(state.modelDownloadProgress * 100).roundToInt()}%")
+                }
+                selectedModel?.availableInApp == true && !state.modelInstalled -> {
                     Text(
-                        text = "Downloading ${(state.modelDownloadProgress * 100).roundToInt()}%",
-                        style = MaterialTheme.typography.bodySmall
+                        text = "Downloads continue in app storage and report progress in the status bar.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                } else {
-                    Button(
-                        onClick = onDownloadModel,
-                        enabled = !state.isBusy
-                    ) {
+                    Button(onClick = onDownloadModel, enabled = !state.isBusy) {
                         Text("Download model")
                     }
+                }
+                selectedModel?.availableInApp == false -> {
+                    Text(
+                        text = "This model is listed from the research report, but its mobile runtime is not integrated yet.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                state.modelInstalled -> {
+                    Text(
+                        text = "Ready for offline playback.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }

@@ -14,6 +14,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
@@ -34,6 +36,7 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
 
     override fun play(sentences: List<BookSentence>, startIndex: Int, speechRate: Float) {
         stop()
+        if (sentences.isEmpty()) return
         rate = speechRate.coerceIn(0.5f, 3.0f)
         stopped.set(false)
         scope.launch {
@@ -41,18 +44,49 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
                 val engine = ensureEngine()
                 val sampleRate = engine.sampleRate()
                 ensureTrack(sampleRate)
-                var index = startIndex.coerceIn(0, sentences.lastIndex.coerceAtLeast(0))
-                while (!stopped.get() && index in sentences.indices) {
-                    _events.emit(PlaybackEvent.SentenceStarted(index))
-                    val audio = withContext(Dispatchers.Default) {
-                        engine.generate(text = sentences[index].text, sid = 0, speed = rate)
+                val queue = Channel<AudioChunk>(capacity = PREFETCH_CHUNKS)
+                val producer = launch {
+                    var index = startIndex.coerceIn(0, sentences.lastIndex)
+                    runCatching {
+                        while (!stopped.get() && index in sentences.indices) {
+                            val text = sentences[index].text
+                            val audio = withContext(Dispatchers.Default) {
+                                engine.generate(text = text, sid = 0, speed = rate)
+                            }
+                            queue.send(
+                                AudioChunk(
+                                    index = index,
+                                    text = text,
+                                    samples = audio.samples
+                                )
+                            )
+                            index += 1
+                        }
+                    }.onFailure { error ->
+                        if (!stopped.get()) {
+                            _events.emit(
+                                PlaybackEvent.Error(
+                                    "Sherpa TTS generation stopped: ${error.message ?: error::class.java.simpleName}"
+                                )
+                            )
+                        }
+                    }.also {
+                        queue.close()
                     }
-                    if (audio.samples.isNotEmpty() && !stopped.get()) {
-                        writeSamples(audio.samples)
-                        writeSilence(sampleRate, pauseMsFor(sentences[index].text))
+                }
+
+                try {
+                    for (chunk in queue) {
+                        if (stopped.get()) break
+                        _events.emit(PlaybackEvent.SentenceStarted(chunk.index))
+                        if (chunk.samples.isNotEmpty() && !stopped.get()) {
+                            writeSamples(chunk.samples)
+                            writeSilence(sampleRate, pauseMsFor(chunk.text))
+                        }
+                        _events.emit(PlaybackEvent.SentenceDone(chunk.index))
                     }
-                    _events.emit(PlaybackEvent.SentenceDone(index))
-                    index += 1
+                } finally {
+                    producer.cancelAndJoin()
                 }
             }.onFailure { error ->
                 _events.emit(PlaybackEvent.Error("Sherpa TTS stopped: ${error.message ?: error::class.java.simpleName}"))
@@ -84,6 +118,9 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
         tts?.let { return it }
         val modelState = ModelRepository(appContext).state()
         val spec = modelState.selected
+        if (!spec.availableInApp) {
+            error("${spec.name} runtime is not integrated yet.")
+        }
         val modelDir = File(LocalProjectPaths(appContext).models, spec.directoryName)
         val requiredFiles = spec.requiredFiles
         val missing = requiredFiles.filterNot { File(modelDir, it).isFile }
@@ -164,6 +201,15 @@ class SherpaTtsPlayer(context: Context) : TtsPlayer {
             else -> 260
         }
 
+    private data class AudioChunk(
+        val index: Int,
+        val text: String,
+        val samples: FloatArray
+    )
+
+    companion object {
+        private const val PREFETCH_CHUNKS = 4
+    }
 }
 
 

@@ -24,7 +24,9 @@ class BookRepository(private val context: Context) {
 
     suspend fun loadBooks(): List<AudioBook> = withContext(Dispatchers.IO) {
         paths.ensure()
-        readIndex().mapNotNull { id -> loadBook(id) }
+        readIndex()
+            .mapNotNull { id -> loadBook(id) }
+            .sortedWith(compareByDescending<AudioBook> { it.lastReadAt ?: 0L }.thenByDescending { it.importedAt })
     }
 
     suspend fun importBook(uri: Uri): AudioBook = withContext(Dispatchers.IO) {
@@ -57,6 +59,7 @@ class BookRepository(private val context: Context) {
             author = parsed.author,
             fileName = originalName,
             importedAt = System.currentTimeMillis(),
+            lastReadAt = null,
             chapters = parsed.chapters,
             sentences = parsed.sentences
         )
@@ -72,7 +75,14 @@ class BookRepository(private val context: Context) {
         } ?: "imported.epub"
 
     suspend fun saveProgress(bookId: String, sentenceIndex: Int) = withContext(Dispatchers.IO) {
-        loadBook(bookId)?.let { saveBook(it.copy(currentSentenceIndex = sentenceIndex.coerceAtLeast(0))) }
+        loadBook(bookId)?.let {
+            saveBook(
+                it.copy(
+                    currentSentenceIndex = sentenceIndex.coerceAtLeast(0),
+                    lastReadAt = System.currentTimeMillis()
+                )
+            )
+        }
     }
 
     private fun loadBook(id: String): AudioBook? {
@@ -102,6 +112,7 @@ class BookRepository(private val context: Context) {
         .put("author", author)
         .put("fileName", fileName)
         .put("importedAt", importedAt)
+        .put("lastReadAt", lastReadAt)
         .put("currentSentenceIndex", currentSentenceIndex)
         .put("chapters", JSONArray(chapters.map { chapter ->
             JSONObject()
@@ -146,6 +157,7 @@ class BookRepository(private val context: Context) {
             author = json.optString("author").takeIf(String::isNotBlank),
             fileName = json.getString("fileName"),
             importedAt = json.getLong("importedAt"),
+            lastReadAt = json.optLong("lastReadAt").takeIf { it > 0 },
             chapters = chapters,
             sentences = sentences,
             currentSentenceIndex = json.optInt("currentSentenceIndex", 0)

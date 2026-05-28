@@ -6,6 +6,7 @@ data class AudioBook(
     val author: String?,
     val fileName: String,
     val importedAt: Long,
+    val lastReadAt: Long? = null,
     val chapters: List<BookChapter>,
     val sentences: List<BookSentence>,
     val currentSentenceIndex: Int = 0

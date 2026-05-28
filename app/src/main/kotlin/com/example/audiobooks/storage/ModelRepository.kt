@@ -1,6 +1,9 @@
 package com.example.audiobooks.storage
 
 import android.content.Context
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -14,6 +17,8 @@ data class TtsModelSpec(
     val id: String,
     val name: String,
     val description: String,
+    val runtime: String,
+    val availableInApp: Boolean,
     val directoryName: String,
     val archiveName: String,
     val downloadUrl: String,
@@ -36,6 +41,7 @@ data class ModelInstallState(
 )
 
 class ModelRepository(context: Context) {
+    private val appContext = context.applicationContext
     private val paths = LocalProjectPaths(context)
 
     fun state(): ModelInstallState {
@@ -61,8 +67,13 @@ class ModelRepository(context: Context) {
     suspend fun downloadAndInstall(onProgress: (Float) -> Unit) = withContext(Dispatchers.IO) {
         paths.ensure()
         val spec = selectedModel()
+        require(spec.availableInApp) { "${spec.name} runtime is not integrated yet." }
         val archive = File(paths.downloads, spec.archiveName)
-        download(spec.downloadUrl, archive, onProgress)
+        showProgressNotification(spec.name, 0)
+        download(spec.downloadUrl, archive) { progress ->
+            onProgress(progress)
+            showProgressNotification(spec.name, (progress * 100).toInt().coerceIn(0, 100))
+        }
         val tmpModels = File(paths.models, "${spec.directoryName}.tmp")
         if (tmpModels.exists()) tmpModels.deleteRecursively()
         tmpModels.mkdirs()
@@ -75,6 +86,7 @@ class ModelRepository(context: Context) {
         require(extracted.renameTo(modelDir)) { "Could not move downloaded model into place." }
         tmpModels.deleteRecursively()
         require(state().installed) { "Model installation is incomplete." }
+        showDoneNotification(spec.name)
     }
 
     private fun download(url: String, target: File, onProgress: (Float) -> Unit) {
@@ -122,6 +134,43 @@ class ModelRepository(context: Context) {
         }
     }
 
+    private fun showProgressNotification(modelName: String, progress: Int) {
+        val manager = notificationManager()
+        createNotificationChannel(manager)
+        val notification = android.app.Notification.Builder(appContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle("Downloading voice model")
+            .setContentText(modelName)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setProgress(100, progress, false)
+            .build()
+        runCatching { manager.notify(NOTIFICATION_ID, notification) }
+    }
+
+    private fun showDoneNotification(modelName: String) {
+        val manager = notificationManager()
+        createNotificationChannel(manager)
+        val notification = android.app.Notification.Builder(appContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle("Voice model ready")
+            .setContentText(modelName)
+            .setOngoing(false)
+            .build()
+        runCatching { manager.notify(NOTIFICATION_ID, notification) }
+    }
+
+    private fun notificationManager(): NotificationManager =
+        appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+    private fun createNotificationChannel(manager: NotificationManager) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "Model downloads", NotificationManager.IMPORTANCE_LOW)
+            )
+        }
+    }
+
     private fun selectedModel(): TtsModelSpec {
         val selectedId = runCatching {
             if (paths.settings.isFile) JSONObject(paths.settings.readText()).optString("selectedModelId") else ""
@@ -137,28 +186,45 @@ class ModelRepository(context: Context) {
     private fun modelDir(spec: TtsModelSpec): File = File(paths.models, spec.directoryName)
 
     private fun isInstalled(spec: TtsModelSpec): Boolean =
+        spec.availableInApp &&
         spec.requiredFiles.all { File(modelDir(spec), it).isFile }
 
     companion object {
+        private const val CHANNEL_ID = "model_downloads"
+        private const val NOTIFICATION_ID = 1001
         val MODELS = listOf(
             TtsModelSpec(
-                id = "vits-icefall-zh-aishell3",
-                name = "Aishell3 Chinese",
-                description = "Small Chinese model. Fast download, acceptable for smoke tests.",
-                directoryName = "vits-icefall-zh-aishell3",
-                archiveName = "vits-icefall-zh-aishell3.tar.bz2",
-                downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2",
-                ruleFar = "rule.far",
-                approximateSize = "31 MB"
+                id = "cosyvoice2-onnx",
+                name = "CosyVoice2-0.5B ONNX",
+                description = "Priority model from the research report. High Chinese quality; ONNX Runtime Mobile integration is pending.",
+                runtime = "ONNX Runtime Mobile",
+                availableInApp = false,
+                directoryName = "CosyVoice2-0.5B_ONNX",
+                archiveName = "CosyVoice2-0.5B_ONNX.zip",
+                downloadUrl = "https://www.modelscope.cn/models/Lourdle/CosyVoice2-0.5B_ONNX",
+                approximateSize = "ModelScope"
             ),
             TtsModelSpec(
-                id = "vits-melo-tts-zh_en",
-                name = "MeloTTS Chinese/English",
-                description = "Larger bilingual VITS model. Better candidate for audiobook quality.",
-                directoryName = "vits-melo-tts-zh_en",
-                archiveName = "vits-melo-tts-zh_en.tar.bz2",
-                downloadUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-melo-tts-zh_en.tar.bz2",
-                approximateSize = "167 MB"
+                id = "cosyvoice3-onnx",
+                name = "Fun-CosyVoice3-0.5B ONNX",
+                description = "Newer CosyVoice option from the report. Better quality target; ONNX Runtime Mobile integration is pending.",
+                runtime = "ONNX Runtime Mobile",
+                availableInApp = false,
+                directoryName = "Fun-CosyVoice3-0.5B-ONNX",
+                archiveName = "cosy-voice3-onnx.zip",
+                downloadUrl = "https://huggingface.co/ayousanz/cosy-voice3-onnx",
+                approximateSize = "HuggingFace"
+            ),
+            TtsModelSpec(
+                id = "fish-speech-1.5",
+                name = "Fish Speech 1.5",
+                description = "Emotion-capable model from the report. It needs conversion/quantization before mobile integration.",
+                runtime = "Pending conversion",
+                availableInApp = false,
+                directoryName = "fish-speech-1.5",
+                archiveName = "fish-speech-1.5.zip",
+                downloadUrl = "https://www.modelscope.cn/models/fishaudio/fish-speech-1.5",
+                approximateSize = "Conversion required"
             )
         )
     }
