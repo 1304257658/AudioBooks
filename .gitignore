@@ -1,0 +1,12 @@
+.gradle/
+.idea/
+.tools/
+build/
+local.properties
+*.iml
+*.apk
+*.aab
+*.jks
+app/libs/*.aar
+app/src/main/assets/vits-icefall-zh-aishell3/
+
