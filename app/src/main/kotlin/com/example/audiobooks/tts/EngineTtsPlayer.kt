@@ -18,6 +18,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -26,19 +27,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Engine-agnostic streaming player.
  *
- * This class owns ONLY the playback pipeline: prefetch queue, AudioTrack streaming, inter-sentence
- * pauses and playback events. The actual speech synthesis is delegated to whatever [TtsEngine] the
- * [TtsEngineRegistry] resolves for the currently selected model. Swapping the underlying model
- * therefore never touches this file.
- *
- * The engine is created lazily on first playback (not at construction / app startup) because some
- * native runtimes load large graphs that can crash a cold process.
+ * This class owns only the playback pipeline: bounded concurrent synthesis, ordered AudioTrack
+ * streaming, inter-sentence pauses and playback events. The actual speech synthesis is delegated
+ * to whatever [TtsEngine] the registry resolves for the currently selected model.
  */
 class EngineTtsPlayer(context: Context) : TtsPlayer {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val stopped = AtomicBoolean(true)
-    private var engine: TtsEngine? = null
+    private val engineLock = Any()
+    private val engines = mutableListOf<TtsEngine?>()
     private var track: AudioTrack? = null
     private var rate = 1.0f
 
@@ -52,49 +50,73 @@ class EngineTtsPlayer(context: Context) : TtsPlayer {
         stopped.set(false)
         scope.launch {
             runCatching {
-                val engine = ensureEngine()
-                val sampleRate = engine.sampleRate
+                val primaryEngine = ensureEngine(slot = 0)
+                val sampleRate = primaryEngine.sampleRate
                 ensureTrack(sampleRate)
-                val queue = Channel<AudioChunk>(capacity = PREFETCH_CHUNKS)
+
+                val start = startIndex.coerceIn(0, sentences.lastIndex)
+                val end = sentences.lastIndex
+                val workerCount = minOf(MAX_TTS_WORKERS, end - start + 1)
+                val indexQueue = Channel<Int>(capacity = PREFETCH_CHUNKS)
+                val results = Channel<AudioChunk>(capacity = PREFETCH_CHUNKS)
+
                 val producer = launch {
-                    var index = startIndex.coerceIn(0, sentences.lastIndex)
-                    runCatching {
-                        while (!stopped.get() && index in sentences.indices) {
-                            val text = sentences[index].text
-                            val audio = withContext(Dispatchers.Default) {
-                                engine.synthesize(text = text, speakerId = 0, speed = rate)
+                    val dispatcher = launch {
+                        for (index in start..end) {
+                            if (stopped.get()) break
+                            indexQueue.send(index)
+                        }
+                        indexQueue.close()
+                    }
+                    val workers = List(workerCount) { worker ->
+                        launch {
+                            val workerEngine = ensureEngine(slot = worker)
+                            runCatching {
+                                for (index in indexQueue) {
+                                    if (stopped.get()) break
+                                    val text = sentences[index].text
+                                    val audio = withContext(Dispatchers.Default) {
+                                        workerEngine.synthesize(text = text, speakerId = 0, speed = rate)
+                                    }
+                                    results.send(
+                                        AudioChunk(
+                                            index = index,
+                                            text = text,
+                                            samples = levelAudio(audio)
+                                        )
+                                    )
+                                }
+                            }.onFailure { error ->
+                                reportGenerationError(error)
                             }
-                            queue.send(
-                                AudioChunk(
-                                    index = index,
-                                    text = text,
-                                    samples = audio
-                                )
-                            )
-                            index += 1
                         }
+                    }
+                    runCatching {
+                        dispatcher.join()
+                        workers.joinAll()
                     }.onFailure { error ->
-                        if (!stopped.get()) {
-                            _events.emit(
-                                PlaybackEvent.Error(
-                                    "TTS generation stopped: ${error.message ?: error::class.java.simpleName}"
-                                )
-                            )
-                        }
+                        reportGenerationError(error)
                     }.also {
-                        queue.close()
+                        results.close()
                     }
                 }
 
                 try {
-                    for (chunk in queue) {
-                        if (stopped.get()) break
+                    val pending = sortedMapOf<Int, AudioChunk>()
+                    var nextIndex = start
+                    while (!stopped.get() && nextIndex <= end) {
+                        while (!stopped.get() && pending[nextIndex] == null) {
+                            val received = results.receiveCatching().getOrNull() ?: break
+                            pending[received.index] = received
+                        }
+                        val chunk = pending.remove(nextIndex) ?: break
                         _events.emit(PlaybackEvent.SentenceStarted(chunk.index))
                         if (chunk.samples.isNotEmpty() && !stopped.get()) {
                             writeSamples(chunk.samples)
                             writeSilence(sampleRate, pauseMsFor(chunk.text))
                         }
                         _events.emit(PlaybackEvent.SentenceDone(chunk.index))
+                        nextIndex += 1
                     }
                 } finally {
                     producer.cancelAndJoin()
@@ -120,33 +142,52 @@ class EngineTtsPlayer(context: Context) : TtsPlayer {
         stop()
         track?.release()
         track = null
-        engine?.release()
-        engine = null
+        releaseEngines()
         scope.cancel()
     }
 
-    private fun ensureEngine(): TtsEngine {
-        engine?.let { return it }
+    private fun reportGenerationError(error: Throwable) {
+        if (!stopped.get()) {
+            stopped.set(true)
+            _events.tryEmit(
+                PlaybackEvent.Error(
+                    "TTS generation stopped: ${error.message ?: error::class.java.simpleName}"
+                )
+            )
+        }
+    }
+
+    private fun ensureEngine(slot: Int): TtsEngine = synchronized(engineLock) {
+        while (engines.size <= slot) engines += null
+        engines[slot]?.let { return@synchronized it }
+        createEngine().also { engines[slot] = it }
+    }
+
+    private fun createEngine(): TtsEngine {
         val modelState = ModelRepository(appContext).state()
         val spec = modelState.selected
         val factory = TtsEngineRegistry.factory(spec.engineId)
-            ?: error("没有为模型 ${spec.name} 注册推理引擎（engineId=${spec.engineId}）。")
+            ?: error("No TTS engine is registered for ${spec.name} (${spec.engineId}).")
         if (!factory.isImplemented) {
-            error("${spec.name} 的离线推理引擎仍在开发中。")
+            error("${spec.name} runtime is still under development.")
         }
         val modelDir = File(LocalProjectPaths(appContext).models, spec.directoryName)
         val missing = factory.requiredFiles(spec).filterNot { File(modelDir, it).isFile }
         if (missing.isNotEmpty()) {
-            error("语音模型文件不完整，请先下载。缺少：${missing.joinToString()}")
+            error("Voice model files are incomplete. Missing: ${missing.joinToString()}")
         }
-        return factory.create(appContext, modelDir, spec).also { engine = it }
+        return factory.create(appContext, modelDir, spec)
     }
 
-    /** Drop the cached engine so the next playback rebuilds it (e.g. after switching models). */
+    /** Drop cached engines so the next playback rebuilds them after a model switch/delete. */
     fun clearEngine() {
         stop()
-        engine?.release()
-        engine = null
+        releaseEngines()
+    }
+
+    private fun releaseEngines() = synchronized(engineLock) {
+        engines.forEach { it?.release() }
+        engines.clear()
     }
 
     private fun ensureTrack(sampleRate: Int) {
@@ -192,12 +233,31 @@ class EngineTtsPlayer(context: Context) : TtsPlayer {
     }
 
     private fun pauseMsFor(text: String): Int =
-        when (text.trim().lastOrNull()) {
-            '。', '.', '！', '!', '？', '?' -> 420
-            '；', ';' -> 320
-            '，', '、', ',', '：', ':' -> 220
+        if (text.contains(PARAGRAPH_BREAK_MARKER)) {
+            560
+        } else when (text.trim().lastOrNull()) {
+            '.', '!', '?', ';', '\u3002', '\uff01', '\uff1f', '\uff1b' -> 420
+            ',', ':', '\u3001', '\uff0c', '\uff1a' -> 220
             else -> 260
         }
+
+    private fun levelAudio(samples: FloatArray): FloatArray {
+        if (samples.isEmpty()) return samples
+        var sumSquares = 0.0
+        var peak = 0.0f
+        samples.forEach { sample ->
+            sumSquares += (sample * sample).toDouble()
+            peak = maxOf(peak, kotlin.math.abs(sample))
+        }
+        if (peak <= 0.0001f) return samples
+        val rms = kotlin.math.sqrt(sumSquares / samples.size).toFloat().coerceAtLeast(0.0001f)
+        val gain = (TARGET_RMS / rms).coerceIn(MIN_GAIN, MAX_GAIN)
+        val peakLimitedGain = minOf(gain, PEAK_CEILING / peak)
+        if (kotlin.math.abs(peakLimitedGain - 1.0f) < 0.02f) return samples
+        return FloatArray(samples.size) { index ->
+            (samples[index] * peakLimitedGain).coerceIn(-PEAK_CEILING, PEAK_CEILING)
+        }
+    }
 
     private data class AudioChunk(
         val index: Int,
@@ -207,5 +267,11 @@ class EngineTtsPlayer(context: Context) : TtsPlayer {
 
     companion object {
         private const val PREFETCH_CHUNKS = 4
+        private const val MAX_TTS_WORKERS = 2
+        private const val TARGET_RMS = 0.12f
+        private const val MIN_GAIN = 0.65f
+        private const val MAX_GAIN = 2.2f
+        private const val PEAK_CEILING = 0.95f
+        private const val PARAGRAPH_BREAK_MARKER = "\u2029"
     }
 }

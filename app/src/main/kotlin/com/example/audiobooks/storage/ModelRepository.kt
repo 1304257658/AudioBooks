@@ -12,10 +12,12 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
+import kotlin.math.min
 
 /** How a model package is fetched. Decoupled from the runtime that later consumes the files. */
 enum class DownloadStrategy {
@@ -103,6 +105,7 @@ class ModelRepository(context: Context) {
         val spec = MODELS.firstOrNull { it.id == modelId } ?: return@withContext
         val dir = modelDir(spec)
         if (dir.exists()) dir.deleteRecursively()
+        File(paths.models, "${spec.directoryName}.tmp").takeIf { it.exists() }?.deleteRecursively()
         File(paths.downloads, spec.archiveName).takeIf { it.exists() }?.delete()
     }
 
@@ -132,30 +135,41 @@ class ModelRepository(context: Context) {
     private fun downloadModelScopeSnapshot(spec: TtsModelSpec, onProgress: (Float) -> Unit) {
         val targetDir = modelDir(spec)
         val tmpDir = File(paths.models, "${spec.directoryName}.tmp")
-        if (tmpDir.exists()) tmpDir.deleteRecursively()
         tmpDir.mkdirs()
-        val available = modelScopeFiles(spec.modelScopeRepoId).toSet()
-        val files = spec.downloadFiles.filter { it in available }
+        val available = modelScopeFileMetadata(spec.modelScopeRepoId).associateBy { it.path }
+        val files = spec.downloadFiles.mapNotNull { available[it] }
         val missing = spec.downloadFiles.filterNot { it in available }
         require(missing.isEmpty()) { "Model repository is missing expected files: ${missing.joinToString()}" }
         require(files.isNotEmpty()) { "No downloadable model files were found." }
 
-        val totalBytes = spec.sizeBytes.takeIf { it > 0L } ?: files.size.toLong()
-        var downloadedBytes = 0L
-        files.forEachIndexed { index, relativePath ->
-            val target = File(tmpDir, relativePath).canonicalFile
+        val declaredTotal = files.sumOf { it.size.takeIf { size -> size > 0L } ?: 0L }
+        val totalBytes = declaredTotal.takeIf { it > 0L } ?: spec.sizeBytes.takeIf { it > 0L } ?: files.size.toLong()
+        fun currentDownloadedBytes(): Long =
+            files.sumOf { file ->
+                val local = File(tmpDir, file.path)
+                if (file.size > 0L) min(local.length(), file.size) else local.length()
+            }
+
+        files.forEach { file ->
+            val target = File(tmpDir, file.path).canonicalFile
             require(target.path.startsWith(tmpDir.canonicalPath)) {
                 "Model repository contains an unsafe path."
             }
             target.parentFile?.mkdirs()
-            var lastFileBytes = 0L
-            download(modelScopeDownloadUrl(spec.modelScopeRepoId, relativePath), target) { _, fileBytes ->
-                val current = downloadedBytes + fileBytes
-                onProgress((current.toFloat() / totalBytes).coerceIn(0f, 1f))
-                lastFileBytes = fileBytes
+            if (file.size > 0L && target.length() > file.size) {
+                target.delete()
             }
-            downloadedBytes += lastFileBytes
-            onProgress((downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f))
+            if (file.size <= 0L || target.length() < file.size) {
+                downloadWithResume(
+                    url = modelScopeDownloadUrl(spec.modelScopeRepoId, file.path),
+                    target = target,
+                    expectedBytes = file.size.takeIf { it > 0L }
+                ) { fileBytes ->
+                    val current = currentDownloadedBytes() - target.length() + fileBytes
+                    onProgress((current.toFloat() / totalBytes).coerceIn(0f, 1f))
+                }
+            }
+            onProgress((currentDownloadedBytes().toFloat() / totalBytes).coerceIn(0f, 1f))
         }
 
         if (targetDir.exists()) targetDir.deleteRecursively()
@@ -166,12 +180,15 @@ class ModelRepository(context: Context) {
     private fun downloadAndExtractArchive(spec: TtsModelSpec, onProgress: (Float) -> Unit) {
         val targetDir = modelDir(spec)
         val tmpDir = File(paths.models, "${spec.directoryName}.tmp")
-        if (tmpDir.exists()) tmpDir.deleteRecursively()
-        tmpDir.mkdirs()
 
         val archive = File(paths.downloads, spec.archiveName)
         // Reserve the last 10% of the progress bar for extraction/move.
-        download(spec.downloadUrl, archive) { fraction, _ -> onProgress(fraction * 0.9f) }
+        downloadWithResume(spec.downloadUrl, archive, expectedBytes = null) { fileBytes ->
+            val total = spec.sizeBytes.takeIf { it > 0L } ?: archive.length().coerceAtLeast(1L)
+            onProgress((fileBytes.toFloat() / total).coerceIn(0f, 1f) * 0.9f)
+        }
+        if (tmpDir.exists()) tmpDir.deleteRecursively()
+        tmpDir.mkdirs()
         extractTarBz2(archive, tmpDir)
         onProgress(0.95f)
 
@@ -190,18 +207,37 @@ class ModelRepository(context: Context) {
         onProgress(1f)
     }
 
-    private fun modelScopeFiles(repoId: String): List<String> {
-        val apiUrl = "https://www.modelscope.cn/api/v1/models/$repoId/repo/files?Revision=master"
-        val connection = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15_000
-            readTimeout = 60_000
-            instanceFollowRedirects = true
+    private fun modelScopeFileMetadata(repoId: String): List<ModelScopeFile> {
+        val visited = mutableSetOf<String>()
+        val files = mutableListOf<ModelScopeFile>()
+
+        fun collect(root: String = "") {
+            if (!visited.add(root)) return
+            val rootQuery = root.takeIf(String::isNotBlank)?.let {
+                "&Root=${URLEncoder.encode(it, Charsets.UTF_8.name()).replace("+", "%20")}"
+            }.orEmpty()
+            val apiUrl = "https://www.modelscope.cn/api/v1/models/$repoId/repo/files?Revision=master$rootQuery"
+            val connection = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 60_000
+                instanceFollowRedirects = true
+            }
+            val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val entries = JSONObject(body).optJSONObject("Data")?.optJSONArray("Files") ?: JSONArray()
+            (0 until entries.length()).forEach { i ->
+                val item = entries.optJSONObject(i) ?: return@forEach
+                val path = item.optString("Path").takeIf(String::isNotBlank) ?: return@forEach
+                val size = item.optLong("Size", -1L)
+                if (size == 0L && !path.substringAfterLast("/").contains(".")) {
+                    collect(path)
+                } else {
+                    files += ModelScopeFile(path = path, size = size)
+                }
+            }
         }
-        val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-        val files = JSONObject(body).optJSONObject("Data")?.optJSONArray("Files") ?: JSONArray()
-        return (0 until files.length()).mapNotNull { i ->
-            files.optJSONObject(i)?.optString("Path")?.takeIf(String::isNotBlank)
-        }
+
+        collect()
+        return files.distinctBy { it.path }
     }
 
     private fun modelScopeDownloadUrl(repoId: String, relativePath: String): String {
@@ -209,27 +245,73 @@ class ModelRepository(context: Context) {
         return "https://www.modelscope.cn/api/v1/models/$repoId/repo?Revision=master&FilePath=$encodedPath"
     }
 
-    private fun download(url: String, target: File, onProgress: (Float, Long) -> Unit) {
+    private fun downloadWithResume(
+        url: String,
+        target: File,
+        expectedBytes: Long?,
+        onProgress: (Long) -> Unit
+    ) {
+        var attempt = 0
+        while (true) {
+            try {
+                downloadOnceWithResume(url, target, expectedBytes, onProgress)
+                if (expectedBytes != null && target.length() != expectedBytes) {
+                    error("Downloaded file size mismatch: expected $expectedBytes bytes, got ${target.length()}.")
+                }
+                return
+            } catch (error: Exception) {
+                attempt += 1
+                if (attempt >= DOWNLOAD_RETRY_COUNT) throw error
+                Thread.sleep(DOWNLOAD_RETRY_DELAY_MS * attempt)
+            }
+        }
+    }
+
+    private fun downloadOnceWithResume(
+        url: String,
+        target: File,
+        expectedBytes: Long?,
+        onProgress: (Long) -> Unit
+    ) {
+        val resumeFrom = target.length().takeIf { it > 0L && (expectedBytes == null || it < expectedBytes) } ?: 0L
+        if (expectedBytes != null && target.length() == expectedBytes) {
+            onProgress(target.length())
+            return
+        }
+
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 60_000
             instanceFollowRedirects = true
+            if (resumeFrom > 0L) setRequestProperty("Range", "bytes=$resumeFrom-")
         }
+        val responseCode = connection.responseCode
+        if (responseCode == HTTP_RANGE_NOT_SATISFIABLE && target.length() > 0L) {
+            onProgress(target.length())
+            return
+        }
+        if (responseCode !in 200..299) {
+            error("Download failed with HTTP $responseCode.")
+        }
+        val append = resumeFrom > 0L && responseCode == HttpURLConnection.HTTP_PARTIAL
+        if (resumeFrom > 0L && !append) {
+            target.delete()
+        }
+
+        var copied = if (append) resumeFrom else 0L
         connection.inputStream.use { input ->
-            target.outputStream().use { output ->
-                val length = connection.contentLengthLong.takeIf { it > 0L }
+            FileOutputStream(target, append).use { output ->
                 val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                var copied = 0L
                 while (true) {
                     val read = input.read(buffer)
                     if (read < 0) break
                     output.write(buffer, 0, read)
                     copied += read
-                    if (length != null) onProgress((copied.toFloat() / length).coerceIn(0f, 1f), copied)
+                    onProgress(copied)
                 }
             }
         }
-        onProgress(1f, target.length())
+        onProgress(target.length())
     }
 
     private fun extractTarBz2(archive: File, destination: File) {
@@ -318,10 +400,18 @@ class ModelRepository(context: Context) {
     private fun isDownloaded(spec: TtsModelSpec): Boolean =
         File(modelDir(spec), DOWNLOAD_MARKER).isFile
 
+    private data class ModelScopeFile(
+        val path: String,
+        val size: Long
+    )
+
     companion object {
         private const val CHANNEL_ID = "model_downloads"
         private const val NOTIFICATION_ID = 1001
         private const val DOWNLOAD_MARKER = ".download-complete.json"
+        private const val DOWNLOAD_RETRY_COUNT = 3
+        private const val DOWNLOAD_RETRY_DELAY_MS = 1_500L
+        private const val HTTP_RANGE_NOT_SATISFIABLE = 416
         val MODELS = listOf(
             // Default, fully working offline voice. End-to-end VITS (MeloTTS zh_en) on sherpa-onnx.
             // Distributed by the sherpa-onnx project as a single .tar.bz2 release asset.
@@ -351,18 +441,31 @@ class ModelRepository(context: Context) {
             TtsModelSpec(
                 id = "cosyvoice2-onnx",
                 name = "CosyVoice2-0.5B ONNX",
-                description = "高音质中文目标模型（LLM+flow+vocoder，zero-shot 克隆）。当前仓库仅含 flow/hift，端侧推理引擎开发中。",
+                description = "高音质中文目标模型（LLM+flow+vocoder，zero-shot 克隆）。已切到 ModelScope 官方完整仓库，端侧推理引擎开发中。",
                 engineId = "cosyvoice2",
                 runtime = "ONNX Runtime Mobile（开发中）",
                 directoryName = "CosyVoice2-0.5B_ONNX",
                 archiveName = "CosyVoice2-0.5B_ONNX.zip",
-                downloadUrl = "https://www.modelscope.cn/models/Lourdle/CosyVoice2-0.5B_ONNX",
-                modelScopeRepoId = "Lourdle/CosyVoice2-0.5B_ONNX",
+                downloadUrl = "https://www.modelscope.cn/models/iic/CosyVoice2-0.5B",
+                modelScopeRepoId = "iic/CosyVoice2-0.5B",
                 downloadFiles = listOf(
                     "configuration.json",
-                    "flow_hift_combined_fp16.onnx"
+                    "cosyvoice2.yaml",
+                    "campplus.onnx",
+                    "flow.decoder.estimator.fp32.onnx",
+                    "speech_tokenizer_v2.onnx",
+                    "speech_tokenizer_v2.batch.onnx",
+                    "llm.pt",
+                    "flow.pt",
+                    "hift.pt",
+                    "CosyVoice-BlankEN/config.json",
+                    "CosyVoice-BlankEN/generation_config.json",
+                    "CosyVoice-BlankEN/merges.txt",
+                    "CosyVoice-BlankEN/model.safetensors",
+                    "CosyVoice-BlankEN/tokenizer_config.json",
+                    "CosyVoice-BlankEN/vocab.json"
                 ),
-                sizeBytes = 335_737_054L + 25L
+                sizeBytes = 4_858_975_634L
             ),
             TtsModelSpec(
                 id = "cosyvoice3-onnx",
