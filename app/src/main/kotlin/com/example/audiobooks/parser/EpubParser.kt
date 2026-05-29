@@ -3,6 +3,7 @@ package com.example.audiobooks.parser
 import com.example.audiobooks.model.BookChapter
 import com.example.audiobooks.model.BookSentence
 import org.jsoup.Jsoup
+import org.jsoup.nodes.TextNode
 import org.w3c.dom.Element
 import java.io.File
 import java.util.zip.ZipFile
@@ -19,8 +20,14 @@ class EpubParser {
             val title = opf.textOfFirst("dc:title").ifBlank { file.nameWithoutExtension }
             val author = opf.textOfFirst("dc:creator").ifBlank { null }
             val manifest = opf.elements("item").associateBy { it.getAttribute("id") }
-            val spineIds = opf.elements("itemref")
-                .mapNotNull { it.getAttribute("idref").takeIf(String::isNotBlank) }
+            val spine = opf.elements("itemref")
+                .filterNot { it.getAttribute("linear").equals("no", ignoreCase = true) }
+                .mapNotNull { item ->
+                    item.getAttribute("idref")
+                        .takeIf(String::isNotBlank)
+                        ?.let { SpineEntry(it) }
+                }
+            val tocEntries = parseNavigationEntries(zip, opf, manifest, baseDir)
 
             val chapters = mutableListOf<BookChapter>()
             val sentences = mutableListOf<BookSentence>()
@@ -31,11 +38,11 @@ class EpubParser {
             val htmlChapters = mutableListOf<String>()
             val stylesheetLinks = linkedSetOf<String>()
 
-            spineIds.forEachIndexed { chapterIndex, idRef ->
-                val item = manifest[idRef] ?: return@forEachIndexed
-                val href = item.getAttribute("href").takeIf(String::isNotBlank) ?: return@forEachIndexed
+            spine.forEach { spineEntry ->
+                val item = manifest[spineEntry.idRef] ?: return@forEach
+                val href = item.getAttribute("href").takeIf(String::isNotBlank) ?: return@forEach
                 val entryPath = normalizeZipPath(baseDir + href)
-                val entry = zip.getEntry(entryPath) ?: return@forEachIndexed
+                val entry = zip.getEntry(entryPath) ?: return@forEach
                 val html = zip.getInputStream(entry).bufferedReader(Charsets.UTF_8).use { input ->
                     input.readText()
                 }
@@ -49,26 +56,34 @@ class EpubParser {
                     }
                     htmlChapters += "<section class=\"chapter\">${doc.body().html()}</section>"
                 }
-                val text = doc.text()
-                val chapterTitle = doc.select("h1, h2, h3, title")
+                val fallbackTitle = doc.select("h1, h2, h3, title")
                     .firstOrNull()
                     ?.text()
                     ?.trim()
                     ?.takeIf { it.isNotBlank() }
                     ?: href.substringAfterLast("/")
-                    .substringBeforeLast(".")
-                    .ifBlank { "Chapter ${chapterIndex + 1}" }
-                val start = sentences.size
-                splitReadableText(text, chapterIndex).forEach { sentence ->
-                    sentences += sentence.copy(index = sentences.size)
-                }
-                if (sentences.size > start) {
-                    chapters += BookChapter(
-                        index = chapterIndex,
-                        title = chapterTitle,
-                        startSentenceIndex = start,
-                        endSentenceIndex = sentences.lastIndex
-                    )
+                        .substringBeforeLast(".")
+                        .ifBlank { "Chapter ${chapters.size + 1}" }
+                val sections = splitEpubDocument(
+                    doc = doc,
+                    entryPath = entryPath,
+                    tocEntries = tocEntries.filter { it.path == entryPath },
+                    fallbackTitle = fallbackTitle
+                )
+                sections.forEach { section ->
+                    val start = sentences.size
+                    val chapterIndex = chapters.size
+                    splitReadableText(section.text, chapterIndex).forEach { sentence ->
+                        sentences += sentence.copy(index = sentences.size)
+                    }
+                    if (sentences.size > start) {
+                        chapters += BookChapter(
+                            index = chapterIndex,
+                            title = section.title,
+                            startSentenceIndex = start,
+                            endSentenceIndex = sentences.lastIndex
+                        )
+                    }
                 }
             }
 
@@ -119,6 +134,204 @@ class EpubParser {
 
     private fun Element.textOfFirst(name: String): String =
         elements(name).firstOrNull()?.textContent?.trim().orEmpty()
+
+    private fun parseNavigationEntries(
+        zip: ZipFile,
+        opf: Element,
+        manifest: Map<String, Element>,
+        baseDir: String
+    ): List<TocEntry> {
+        val navEntries = parseEpub3NavEntries(zip, manifest, baseDir)
+        if (navEntries.isNotEmpty()) return navEntries
+        return parseNcxEntries(zip, opf, manifest, baseDir)
+    }
+
+    private fun parseEpub3NavEntries(
+        zip: ZipFile,
+        manifest: Map<String, Element>,
+        baseDir: String
+    ): List<TocEntry> {
+        val navItem = manifest.values.firstOrNull {
+            it.getAttribute("properties").split(Regex("\\s+")).any { property -> property == "nav" }
+        } ?: return emptyList()
+        val href = navItem.getAttribute("href").takeIf(String::isNotBlank) ?: return emptyList()
+        val navPath = normalizeZipPath(baseDir + href)
+        val entry = zip.getEntry(navPath) ?: return emptyList()
+        val html = zip.getInputStream(entry).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        val doc = Jsoup.parse(html)
+        val toc = doc.select("nav").firstOrNull { nav ->
+            nav.attr("epub:type").split(Regex("\\s+")).contains("toc") ||
+                nav.attr("type").equals("toc", ignoreCase = true)
+        } ?: return emptyList()
+        val navDir = navPath.substringBeforeLast("/", missingDelimiterValue = "")
+        return toc.select("a[href]").mapNotNull { link ->
+            val title = link.text().trim().takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val target = resolveEpubHref(navDir, baseDir, link.attr("href"))
+            target?.let { TocEntry(title = title, path = it.first, fragment = it.second) }
+        }.distinctBy { it.path to it.fragment }
+    }
+
+    private fun parseNcxEntries(
+        zip: ZipFile,
+        opf: Element,
+        manifest: Map<String, Element>,
+        baseDir: String
+    ): List<TocEntry> {
+        val tocId = opf.elements("spine").firstOrNull()?.getAttribute("toc")?.takeIf(String::isNotBlank)
+            ?: manifest.values.firstOrNull {
+                it.getAttribute("media-type").equals("application/x-dtbncx+xml", ignoreCase = true)
+            }?.getAttribute("id")
+            ?: return emptyList()
+        val ncxItem = manifest[tocId] ?: return emptyList()
+        val href = ncxItem.getAttribute("href").takeIf(String::isNotBlank) ?: return emptyList()
+        val ncxPath = normalizeZipPath(baseDir + href)
+        val entry = zip.getEntry(ncxPath) ?: return emptyList()
+        val xml = zip.getInputStream(entry).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        val ncx = parseXml(xml)
+        val ncxDir = ncxPath.substringBeforeLast("/", missingDelimiterValue = "")
+        return ncx.elements("navPoint").mapNotNull { point ->
+            val label = point.elements("text").firstOrNull()?.textContent?.trim()?.takeIf(String::isNotBlank)
+                ?: return@mapNotNull null
+            val src = point.elements("content").firstOrNull()?.getAttribute("src")?.takeIf(String::isNotBlank)
+                ?: return@mapNotNull null
+            resolveEpubHref(ncxDir, baseDir, src)?.let {
+                TocEntry(title = label, path = it.first, fragment = it.second)
+            }
+        }.distinctBy { it.path to it.fragment }
+    }
+
+    private fun resolveEpubHref(fromDir: String, baseDir: String, href: String): Pair<String, String?>? {
+        if (href.isBlank() ||
+            href.startsWith("#") ||
+            href.startsWith("http://", ignoreCase = true) ||
+            href.startsWith("https://", ignoreCase = true) ||
+            href.startsWith("data:", ignoreCase = true)
+        ) {
+            return null
+        }
+        val path = normalizeZipPath(
+            listOf(fromDir, href.substringBefore("#"))
+                .filter(String::isNotBlank)
+                .joinToString("/")
+        ).takeIf(String::isNotBlank) ?: return null
+        val normalizedPath = if (baseDir.isNotBlank() && !path.startsWith(baseDir)) "$baseDir$path" else path
+        val fragment = href.substringAfter("#", missingDelimiterValue = "").takeIf(String::isNotBlank)
+        return normalizedPath to fragment
+    }
+
+    private fun splitEpubDocument(
+        doc: org.jsoup.nodes.Document,
+        entryPath: String,
+        tocEntries: List<TocEntry>,
+        fallbackTitle: String
+    ): List<ParsedChapterText> {
+        if (tocEntries.isEmpty()) {
+            val headingSections = splitByHeadings(doc)
+            return headingSections.ifEmpty { listOf(ParsedChapterText(fallbackTitle, doc.text())) }
+        }
+
+        val fileStartTitle = tocEntries.firstOrNull { it.fragment == null }?.title ?: tocEntries.first().title
+        val titleByFragment = tocEntries
+            .mapNotNull { entry -> entry.fragment?.let { it to entry.title } }
+            .toMap()
+        if (titleByFragment.isEmpty()) {
+            return listOf(ParsedChapterText(fileStartTitle, doc.text()))
+        }
+
+        val sections = mutableListOf<ParsedChapterText>()
+        var currentTitle = fileStartTitle
+        val current = StringBuilder()
+        var sawTocAnchor = false
+
+        fun flush() {
+            current.toString()
+                .replace(Regex("[ \\t\\x0B\\f]+"), " ")
+                .replace(Regex("\\n{3,}"), "\n\n")
+                .trim()
+                .takeIf(String::isNotBlank)
+                ?.let { sections += ParsedChapterText(currentTitle, it) }
+            current.clear()
+        }
+
+        fun visit(node: org.jsoup.nodes.Node) {
+            if (node is org.jsoup.nodes.Element) {
+                val anchorTitle = anchorKeys(node).firstNotNullOfOrNull { key -> titleByFragment[key] }
+                if (anchorTitle != null) {
+                    if (current.isNotBlank()) flush()
+                    currentTitle = anchorTitle
+                    sawTocAnchor = true
+                }
+                if (node.tagName() in blockBeforeTags && current.isNotBlank()) current.append('\n')
+            }
+            if (node is TextNode) {
+                val text = node.text().replace(Regex("\\s+"), " ").trim()
+                if (text.isNotBlank()) {
+                    if (current.isNotEmpty() && !current.last().isWhitespace()) current.append(' ')
+                    current.append(text)
+                }
+            }
+            node.childNodes().forEach(::visit)
+            if (node is org.jsoup.nodes.Element && node.tagName() in blockAfterTags && current.isNotBlank()) {
+                current.append('\n')
+            }
+        }
+
+        doc.body()?.childNodes()?.forEach(::visit)
+        flush()
+
+        if (!sawTocAnchor) {
+            return splitByHeadings(doc).ifEmpty {
+                listOf(ParsedChapterText(fileStartTitle.ifBlank { entryPath }, doc.text()))
+            }
+        }
+        return sections
+    }
+
+    private fun splitByHeadings(doc: org.jsoup.nodes.Document): List<ParsedChapterText> {
+        val headings = doc.select("h1, h2")
+            .filter { heading -> heading.text().trim().length in 2..90 }
+        if (headings.size < 2) return emptyList()
+
+        val sections = mutableListOf<ParsedChapterText>()
+        var currentTitle = headings.first().text().trim()
+        val current = StringBuilder()
+
+        fun flush() {
+            current.toString().trim().takeIf(String::isNotBlank)?.let {
+                sections += ParsedChapterText(currentTitle, it)
+            }
+            current.clear()
+        }
+
+        fun visit(node: org.jsoup.nodes.Node) {
+            if (node is org.jsoup.nodes.Element && node.`is`("h1, h2")) {
+                if (current.isNotBlank()) flush()
+                currentTitle = node.text().trim().ifBlank { currentTitle }
+            }
+            if (node is TextNode) {
+                val text = node.text().replace(Regex("\\s+"), " ").trim()
+                if (text.isNotBlank()) {
+                    if (current.isNotEmpty() && !current.last().isWhitespace()) current.append(' ')
+                    current.append(text)
+                }
+            }
+            node.childNodes().forEach(::visit)
+            if (node is org.jsoup.nodes.Element && node.tagName() in blockAfterTags && current.isNotBlank()) {
+                current.append('\n')
+            }
+        }
+
+        doc.body()?.childNodes()?.forEach(::visit)
+        flush()
+        return sections
+    }
+
+    private fun anchorKeys(element: org.jsoup.nodes.Element): List<String> =
+        listOf(
+            element.id(),
+            element.attr("name"),
+            element.attr("xml:id")
+        ).filter(String::isNotBlank)
 
     private fun normalizeZipPath(path: String): String =
         path.replace("\\", "/")
@@ -212,8 +425,18 @@ class EpubParser {
             .replace(">", "&gt;")
             .replace("\"", "&quot;")
 
+    private data class SpineEntry(val idRef: String)
+
+    private data class TocEntry(
+        val title: String,
+        val path: String,
+        val fragment: String?
+    )
+
     companion object {
         private const val READER_DIR = "reader"
         private const val READER_HTML = "reader.html"
+        private val blockBeforeTags = setOf("h1", "h2", "h3", "p", "div", "section", "article", "li", "blockquote")
+        private val blockAfterTags = blockBeforeTags + setOf("br")
     }
 }

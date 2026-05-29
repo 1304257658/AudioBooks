@@ -738,7 +738,7 @@ private fun TextReader(
             val annotation = book.annotations.firstOrNull { it.sentenceIndex == index }
             val annotated = annotation != null
             Text(
-                text = sentence.text,
+                text = sentence.text.replace("\u2029", ""),
                 style = (if (active) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge).let {
                     it.copy(
                         fontSize = it.fontSize.scaleBy(state.readerSettings.fontScale),

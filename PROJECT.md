@@ -78,6 +78,7 @@ This document is the durable project log for architecture decisions, implemented
 - Model package management:
   - select model
   - manual download by user click
+  - resumable downloads for large model files
   - per-model download progress
   - per-model delete
   - resource size labels
@@ -85,6 +86,22 @@ This document is the durable project log for architecture decisions, implemented
 
 ## Recent Changes (v0.3.0 prep — model/runtime decoupling)
 
+- Added bounded concurrent TTS synthesis in `EngineTtsPlayer`: up to two engine instances pre-render
+  upcoming sentences while playback remains strictly ordered. Generated chunks are lightly RMS/peak
+  leveled before streaming to reduce sentence-to-sentence volume jumps.
+- Reworked text segmentation for narration: keep paragraph boundaries as longer breathing pauses,
+  split first on sentence-ending punctuation, split long clauses on comma/colon-like soft breaks,
+  and avoid making overly long synthesis chunks.
+- Improved book chapter detection per `book_chunking_guide.md`: EPUB uses EPUB3 nav / EPUB2 NCX
+  `href#anchor` entries as actual split points before heading/spine fallback, TXT/Markdown detects
+  standalone heading lines, and PDF now tries document Outline before page-based fallback.
+- Switched the CosyVoice2 target package to ModelScope official `iic/CosyVoice2-0.5B` and added the
+  previously missing development artifacts to the download whitelist. It is still not playable on
+  Android because the text-speech LLM stage is published as `llm.pt`; a mobile runnable export/runtime
+  for that stage is still required.
+- Model downloads now keep partial files and resume with HTTP `Range` requests. ModelScope file
+  downloads resume per whitelisted file under `<model>.tmp`; archive downloads resume the archive
+  file before extraction. The app retries transient failures before surfacing an error.
 - Introduced the `TtsEngine` SPI + `TtsEngineRegistry`; models now plug in behind a stable engine id.
 - Refactored `SherpaTtsPlayer` -> engine-agnostic `EngineTtsPlayer` (playback no longer references a
   concrete model). Deleted `SherpaTtsPlayer.kt`.
@@ -107,7 +124,7 @@ This document is the durable project log for architecture decisions, implemented
 ## Known Traps
 
 - Downloaded model files are not the same as a working runtime. CosyVoice/Fish need ONNX Runtime Mobile plus tokenizer, acoustic/vocoder wiring, and post-processing — they do NOT run through sherpa-onnx OfflineTts.
-- The ModelScope repo `Lourdle/CosyVoice2-0.5B_ONNX` ships ONLY the flow + hift back half (no LLM, no speech tokenizer, no speaker embedding). It cannot synthesize text on its own; the "small" size is because it is half a model. A complete export is needed before the `cosyvoice2` engine can be implemented.
+- The older ModelScope repo `Lourdle/CosyVoice2-0.5B_ONNX` ships ONLY the flow + hift back half (no LLM, no speech tokenizer, no speaker embedding). The app now targets official `iic/CosyVoice2-0.5B`, but that package still does not make Android playback automatic because the text-speech LLM stage is `llm.pt`, not a mobile-ready ONNX/runtime integration.
 - New models go through the engine SPI. Do not add model-specific branching into `EngineTtsPlayer` / UI / ViewModel; put runtime logic inside a `TtsEngineFactory`/`TtsEngine` and reference it via `engineId`.
 - Do not reintroduce Android system TTS as a quality fallback. It hides runtime gaps and makes test results misleading.
 - Do not initialize TTS native engines in `AudioBookViewModel` construction. Keep startup independent from model runtime availability.
@@ -119,11 +136,11 @@ This document is the durable project log for architecture decisions, implemented
 ## Current Gaps
 
 - Default offline playback works via the `sherpa-vits` engine (MeloTTS zh_en). This is the shippable voice.
-- CosyVoice2/Fun-CosyVoice3/Fish engines are not yet implemented (slots only). Each needs its own multi-stage ONNX Runtime Mobile pipeline; CosyVoice2 also needs a complete model export (the current repo lacks the LLM/tokenizer). On-device real-time factor for the 0.5B autoregressive decode must be validated (quantize if RTF >= 1) before they can stream.
+- CosyVoice2/Fun-CosyVoice3/Fish engines are not yet implemented (slots only). Each needs its own multi-stage mobile pipeline; CosyVoice2 now has a fuller ModelScope development package, but still needs a mobile runnable text-speech LLM stage and post-processing. On-device real-time factor for the 0.5B autoregressive decode must be validated (quantize if RTF >= 1) before it can stream.
 - The MeloTTS `engineParams` (lexicon/dict/ruleFsts filenames) should be confirmed against the actual extracted release contents on first integration test; adjust the map if the release layout differs.
 - Reader settings are partially localized; not every small UI string is in the language map yet.
-- EPUB chapter extraction is heuristic from headings/title and may need NCX/nav support.
-- PDF chapter navigation is page-based, not document-outline based.
+- EPUB chapter extraction now reads EPUB3 nav / EPUB2 NCX href anchors before falling back to headings/spine.
+- PDF chapter navigation uses document Outline when available; page-based chapters are now only the fallback for PDFs without usable bookmarks.
 - Search jump is sentence-based in text reader; WebView EPUB mode does not yet scroll to matching HTML location.
 
 ## Verification Checklist
