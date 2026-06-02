@@ -19,7 +19,25 @@ This document is the durable project log for architecture decisions, implemented
 
 ## Current Architecture
 
-- UI: single `MainActivity.kt` using Jetpack Compose.
+- UI: Jetpack Compose. `MainActivity.kt` is a thin navigation host (bottom tab bar + mini-player
+  dock + full-screen overlays + bottom sheets). The visual layer was ported from the Claude Design
+  prototype (the `ui/*.jsx` + `styles.css` + `念 Aloud · 离线听书.html` reference files) and lives in
+  `ui/Design*.kt`:
+  - `DesignTheme.kt` — warm-paper light/dark tokens (oklch→sRGB), accent, typography, shapes,
+    `AudioBooksTheme`, plus in-memory dark/serif appearance overrides.
+  - `DesignIcons.kt` — line/solid icons rebuilt as `ImageVector`s via `PathParser` from the
+    prototype's SVG path data; `AppIcon` tints at draw time.
+  - `DesignComponents.kt` — shared primitives (procedural `BookCover` with hue from title, animated
+    `Waveform`, `AppBottomSheet`, `Chip`, `AppSwitch`, `Segmented`, `OnDeviceBadge`, buttons) and
+    AudioBook→design mapping helpers (`progressFraction`, `chapterOf`, `isStarted`, `isFinished`).
+  - `DesignScreens.kt` — Library (hero + filter chips + cover grid), Search (client-side filter),
+    Settings, and the real model-management list (`ModelListContent`).
+  - `DesignPlayer.kt` — Player / Chapters / Import overlays + `OverlayHeader`.
+  - `DesignReader.kt` — Reader (sentence paragraphs, active highlight, tap-to-jump, font cycle,
+    listen/read toggle), In-book search, the full reader-tools sheet, and the EPUB `HtmlReader`.
+  - `DesignSheets.kt` — Speed / Sleep / Model / Book bottom sheets.
+  - The original prototype files under `ui/` (`*.jsx`, `styles.css`, the `.html`) are kept only as
+    design reference; they are NOT part of the Android build (only `*.kt` is compiled).
 - State: `AudioBookViewModel` owns books, model state, reader settings, search state, and playback commands.
 - Storage:
   - `LocalProjectPaths` stores app data under app-specific external storage:
@@ -83,6 +101,31 @@ This document is the durable project log for architecture decisions, implemented
   - per-model delete
   - resource size labels
 - APK output includes version in filename.
+
+## Recent Changes (UI redesign — Claude Design "念 Aloud")
+
+- Replaced the Material-default Compose UI with the warm-paper "念 Aloud" design, ported from the
+  Claude Design prototype into `ui/Design*.kt` (see Current Architecture). Navigation is now a bottom
+  tab bar (书架 / 搜索 / 设置) + a persistent mini-player dock + full-screen overlays (player, reader,
+  in-book search, chapters, import) + bottom sheets (speed, sleep, model/voice, book detail).
+- No backend/functionality was removed. The new UI is wired to the existing `AudioBookViewModel`
+  callbacks 1:1. Conflicts with the prototype were resolved (per product decisions) as follows:
+  - Voice picker maps to the REAL model registry: only implemented + downloaded models are playable;
+    others are selectable/downloadable and show "引擎开发中". (Future voice-cloning models can add
+    multiple timbres behind the same selector.)
+  - The prototype's per-chapter "端侧实时生成" progress is driven by real playback state only (no fake
+    animation). The waveform animates while `isPlaying`. Per-chapter pre-generation is a documented
+    future enhancement, not yet implemented.
+  - The reader keeps EVERY original reader-tool (bookmarks, A-B repeat, repeat count, line spacing,
+    background, gestures, speed, sleep, reset, and a text/original-EPUB layout toggle) inside a
+    "阅读工具" bottom sheet so nothing was lost relative to the old reader.
+  - Import uses the real SAF document picker; a "粘贴文本生成" entry was added (new
+    `BookRepository.importPastedText` + `AudioBookViewModel.importText`, saved as a TXT book).
+- Procedural book covers derive a stable hue from the title (real books carry no cover art).
+- Dark mode + serif/sans body font are in-memory appearance toggles in Settings (consistent with the
+  existing non-persisted `ReaderSettings`). UI language (zh/ja/en) selector retained in Settings.
+- The original prototype files under `ui/` (`*.jsx`, `styles.css`, `念 Aloud · 离线听书.html`) are kept
+  as design reference only and are not compiled.
 
 ## Recent Changes (v0.3.0 prep — model/runtime decoupling)
 

@@ -89,6 +89,21 @@ class AudioBookViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun importText(title: String, content: String) {
+        viewModelScope.launch {
+            _state.update { it.copy(isBusy = true, message = null) }
+            runCatching { repository.importPastedText(title, content) }
+                .onSuccess { book ->
+                    refreshBooks(book.id)
+                    _state.update { it.copy(message = "Imported: ${book.title}") }
+                }
+                .onFailure { error ->
+                    _state.update { it.copy(message = error.message ?: "Import failed.") }
+                }
+            _state.update { it.copy(isBusy = false) }
+        }
+    }
+
     fun selectBook(book: AudioBook) {
         player?.stop()
         _state.update {

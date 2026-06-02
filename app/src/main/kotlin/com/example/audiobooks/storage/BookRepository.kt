@@ -75,6 +75,33 @@ class BookRepository(private val context: Context) {
         book
     }
 
+    suspend fun importPastedText(title: String, content: String): AudioBook = withContext(Dispatchers.IO) {
+        paths.ensure()
+        require(content.isNotBlank()) { "Pasted text is empty." }
+        val id = System.currentTimeMillis().toString()
+        val targetDir = File(booksDir, id).apply { mkdirs() }
+        val cleanTitle = title.trim().ifBlank { "粘贴文本" }
+        val sourceFile = File(targetDir, "book.txt")
+        sourceFile.writeText(content, Charsets.UTF_8)
+
+        val parsedRaw = textParser.parse(sourceFile)
+        val parsed = parsedRaw.copy(title = cleanTitle)
+        val book = AudioBook(
+            id = id,
+            title = parsed.title,
+            author = parsed.author,
+            fileName = "$cleanTitle.txt",
+            readerHtmlFile = parsed.readerHtmlFile,
+            importedAt = System.currentTimeMillis(),
+            lastReadAt = null,
+            chapters = parsed.chapters,
+            sentences = parsed.sentences
+        )
+        saveBook(book)
+        writeIndex((readIndex() + id).distinct())
+        book
+    }
+
     private fun displayName(uri: Uri): String =
         context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
