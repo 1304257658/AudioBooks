@@ -135,7 +135,7 @@ This document is the durable project log for architecture decisions, implemented
 - Reworked text segmentation for narration: keep paragraph boundaries as longer breathing pauses,
   split first on sentence-ending punctuation, split long clauses on comma/colon-like soft breaks,
   and avoid making overly long synthesis chunks.
-- Improved book chapter detection per `book_chunking_guide.md`: EPUB uses EPUB3 nav / EPUB2 NCX
+- Improved book chapter detection per [`../engineering/book-chunking-guide.md`](../engineering/book-chunking-guide.md): EPUB uses EPUB3 nav / EPUB2 NCX
   `href#anchor` entries as actual split points before heading/spine fallback, TXT/Markdown detects
   standalone heading lines, and PDF now tries document Outline before page-based fallback.
 - Switched the CosyVoice2 target package to ModelScope official `iic/CosyVoice2-0.5B` and added the

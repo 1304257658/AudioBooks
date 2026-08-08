@@ -2,7 +2,7 @@
 
 Offline-first Android audiobook app. The app imports local books, parses readable text, stores all app data under one private app data root, and plays with a local TTS runtime when an integrated model is available.
 
-See `PROJECT.md` for maintained implementation notes, architecture, known traps, and current gaps.
+See [`project/PROJECT.md`](project/PROJECT.md) for maintained implementation notes, architecture, known traps, and current gaps.
 
 ## Current Features
 
